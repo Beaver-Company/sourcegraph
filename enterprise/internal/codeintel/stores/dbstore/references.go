@@ -39,6 +39,80 @@ func scanPackageReferences(rows *sql.Rows, queryErr error) (_ []lsifstore.Packag
 	return references, nil
 }
 
+// TODO - rename
+// TODO - paginate
+// TODO - document
+// TODO - test
+func (s *Store) AllTheStuff(ctx context.Context, repositoryID int, commit string, uploadID int, scheme, name, version string) (_ []lsifstore.PackageReference, err error) {
+	// TODO - observe
+
+	// TODO - inline this
+	q := makeVisibleUploadsQuery(repositoryID, commit)
+
+	return scanPackageReferences(s.Query(ctx, sqlf.Sprintf(
+		allTheStuffQuery,
+		scheme, name, version, uploadID,
+		scheme, name, version, q, repositoryID, repositoryID,
+	)))
+}
+
+// TODO - reformat
+// TODO - check efficiency
+
+const allTheStuffQuery = `
+-- source: enterprise/internal/codeintel/stores/dbstore/references.go:AllTheStuff
+(
+SELECT
+	d.id,
+	r.scheme,
+	r.name,
+	r.version,
+	NULL as filter
+FROM lsif_packages r
+LEFT JOIN
+	lsif_dumps_with_repository_name d ON d.id = r.dump_id
+WHERE
+	r.scheme = %s AND
+	r.name = %s AND
+	r.version = %s AND
+	d.id != %s
+ORDER BY d.uploaded_at DESC
+)
+UNION
+(
+SELECT
+	d.id,
+	r.scheme,
+	r.name,
+	r.version,
+	r.filter
+FROM lsif_references r
+LEFT JOIN
+	lsif_dumps_with_repository_name d ON d.id = r.dump_id
+WHERE
+	r.scheme = %s AND
+	r.name = %s AND
+	r.version = %s AND (
+		r.dump_id IN (%s) OR (
+			d.repository_id != %s AND
+			EXISTS (
+				SELECT
+					1
+				FROM
+					lsif_uploads_visible_at_tip
+				WHERE
+					repository_id = d.repository_id AND
+					upload_id = d.id
+			)
+		)
+	)
+ORDER BY
+	d.repository_id = %s DESC,
+	d.repository_id,
+	d.root
+)
+`
+
 // SameRepoPager returns a ReferencePager for dumps that belong to the given repository and commit and reference the package with the
 // given scheme, name, and version.
 func (s *Store) SameRepoPager(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit int) (_ int, _ ReferencePager, err error) {

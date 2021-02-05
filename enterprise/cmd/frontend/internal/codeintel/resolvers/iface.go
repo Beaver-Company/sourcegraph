@@ -38,6 +38,7 @@ type DBStore interface {
 	GetPackage(ctx context.Context, scheme, name, version string) (dbstore.Dump, bool, error)
 	SameRepoPager(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit int) (int, api.ReferencePager, error)
 	PackageReferencePager(ctx context.Context, scheme, name, version string, repositoryID, limit int) (int, api.ReferencePager, error)
+	AllTheStuff(ctx context.Context, repositoryID int, commit string, uploadID int, scheme, name, version string) (_ []lsifstore.PackageReference, err error)
 	HasRepository(ctx context.Context, repositoryID int) (bool, error)
 	HasCommit(ctx context.Context, repositoryID int, commit string) (bool, error)
 	MarkRepositoryAsDirty(ctx context.Context, repositoryID int) error

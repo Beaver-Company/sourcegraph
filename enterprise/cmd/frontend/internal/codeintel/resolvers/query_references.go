@@ -135,97 +135,34 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 			}
 		}
 
-		// TODO - ensure uniqueness
 		worklist[i].OrderedMonikers = orderedMonikers
 	}
 
+	// TODO - redocument
+	//
 	// Phase 4: For every slice of work that has monikers attached from the phase above, we perform
 	// a moniker query on each index that defines one of those monikers. This phase returns the set
 	// of references in the defining index; this handles the case where a user requested references
 	// on a non-definition that is defined in another index.
-
-	for i := range worklist {
-		for _, moniker := range worklist[i].OrderedMonikers {
-			definitionUpload, exists, err := r.dbStore.GetPackage(ctx, moniker.Scheme, moniker.Name, moniker.Version)
-			if err != nil {
-				return nil, "", err
-			}
-			if !exists || definitionUpload.ID == worklist[i].Upload.ID {
-				continue
-			}
-
-			locations, _, err := r.lsifStore.MonikerResults(ctx, definitionUpload.ID, "references", moniker.Scheme, moniker.Identifier, 0, 10000000)
-			if err != nil {
-				return nil, "", err
-			}
-
-			worklist[i].QualifiedLocations = append(worklist[i].QualifiedLocations, QualifiedLocations{
-				Upload:    definitionUpload,
-				Locations: locations,
-			})
-		}
-	}
-
+	//
+	//
 	// Phase 5: For every slice of work that has monikers attached from the phase above, we perform
 	// a moniker query on each index that references one of those monikers. This phase returns the
 	// set of references within the same repository (but outside of the source index).
-
-	for i := range worklist {
-		for _, moniker := range worklist[i].OrderedMonikers {
-			_, pager, err := r.dbStore.SameRepoPager(ctx, r.repositoryID, r.commit, moniker.Scheme, moniker.Name, moniker.Version, 10000000)
-			if err != nil {
-				return nil, "", err
-			}
-			defer func() {
-				err = pager.Done(err)
-			}()
-
-			references, err := pager.PageFromOffset(ctx, 0)
-			if err != nil {
-				return nil, "", err
-			}
-
-			for _, reference := range references {
-				upload, exists, err := r.dbStore.GetDumpByID(ctx, reference.DumpID)
-				if err != nil {
-					return nil, "", err
-				}
-				if !exists {
-					continue
-				}
-
-				// TODO(efritz) - check for commit existence
-				locations, _, err := r.lsifStore.MonikerResults(ctx, reference.DumpID, "references", reference.Scheme, moniker.Identifier, 0, 10000000)
-				if err != nil {
-					return nil, "", err
-				}
-
-				worklist[i].QualifiedLocations = append(worklist[i].QualifiedLocations, QualifiedLocations{
-					Upload:    upload,
-					Locations: locations,
-				})
-			}
-		}
-	}
-
+	//
 	// Phase 6: For every slice of work that has monikers attached from the phase above, we perform
 	// a moniker query on each index that references one of those monikers. This phase returns the
 	// set of references outside of the source repository.
 
 	for i := range worklist {
 		for _, moniker := range worklist[i].OrderedMonikers {
-			_, pager, err := r.dbStore.PackageReferencePager(ctx, moniker.Scheme, moniker.Name, moniker.Version, r.repositoryID, 10000000)
+			references, err := r.dbStore.AllTheStuff(ctx, r.repositoryID, r.commit, worklist[i].Upload.ID, moniker.Scheme, moniker.Name, moniker.Version)
 			if err != nil {
 				return nil, "", err
 			}
-			defer func() {
-				err = pager.Done(err)
-			}()
 
-			references, err := pager.PageFromOffset(ctx, 0)
-			if err != nil {
-				return nil, "", err
-			}
+			// TODO(efritz) - commit check
+			// TODO(efritz) - bloom filter check
 
 			for _, reference := range references {
 				upload, exists, err := r.dbStore.GetDumpByID(ctx, reference.DumpID)
@@ -236,13 +173,11 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 					continue
 				}
 
-				// TODO(efritz) - check for commit existence
 				locations, _, err := r.lsifStore.MonikerResults(ctx, reference.DumpID, "references", reference.Scheme, moniker.Identifier, 0, 10000000)
 				if err != nil {
 					return nil, "", err
 				}
 
-				// TODO(efritz) - ensure deduplicated
 				worklist[i].QualifiedLocations = append(worklist[i].QualifiedLocations, QualifiedLocations{
 					Upload:    upload,
 					Locations: locations,
@@ -251,7 +186,7 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 		}
 	}
 
-	// Phase 7: Combine all reference results and re-adjust the locations in the output ranges
+	// Phase 5: Combine all reference results and re-adjust the locations in the output ranges
 	// so they target the same commit that the user has requested diagnostic results for.
 
 	// TODO - cleanup
