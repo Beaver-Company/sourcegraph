@@ -2,17 +2,11 @@ package resolvers
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
-	"strings"
-	"time"
-
-	"github.com/opentracing/opentracing-go/log"
 
 	codeintelapi "github.com/sourcegraph/sourcegraph/enterprise/cmd/frontend/internal/codeintel/api"
 	store "github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/dbstore"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/lsifstore"
-	"github.com/sourcegraph/sourcegraph/internal/observation"
 )
 
 // AdjustedLocation is similar to a codeintelapi.ResolvedLocation, but with fields denoting
@@ -93,314 +87,6 @@ func NewQueryResolver(
 	}
 }
 
-const slowRangesRequestThreshold = time.Second
-
-// Ranges returns code intelligence for the ranges that fall within the given range of lines. These
-// results are partial and do not include references outside the current file, or any location that
-// requires cross-linking of bundles (cross-repo or cross-root).
-func (r *queryResolver) Ranges(ctx context.Context, startLine, endLine int) (_ []AdjustedCodeIntelligenceRange, err error) {
-	ctx, endObservation := observeResolver(ctx, &err, "Ranges", r.operations.ranges, slowRangesRequestThreshold, observation.Args{
-		LogFields: []log.Field{
-			log.Int("repositoryID", r.repositoryID),
-			log.String("commit", r.commit),
-			log.String("path", r.path),
-			log.String("uploadIDs", strings.Join(r.uploadIDs(), ", ")),
-			log.Int("startLine", startLine),
-			log.Int("endLine", endLine),
-		},
-	})
-	defer endObservation()
-
-	var adjustedRanges []AdjustedCodeIntelligenceRange
-	for i := range r.uploads {
-		adjustedPath, ok, err := r.positionAdjuster.AdjustPath(ctx, r.uploads[i].Commit, r.path, false)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-
-		// TODO(efritz) - determine how to do best-effort line adjustments for this case
-		ranges, err := r.codeIntelAPI.Ranges(ctx, adjustedPath, startLine, endLine, r.uploads[i].ID)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, rn := range ranges {
-			adjustedDefinitions, err := r.adjustLocations(ctx, rn.Definitions)
-			if err != nil {
-				return nil, err
-			}
-
-			adjustedReferences, err := r.adjustLocations(ctx, rn.References)
-			if err != nil {
-				return nil, err
-			}
-
-			_, adjustedRange, err := r.adjustRange(ctx, r.uploads[i].RepositoryID, r.uploads[i].Commit, adjustedPath, rn.Range)
-			if err != nil {
-				return nil, err
-			}
-
-			adjustedRanges = append(adjustedRanges, AdjustedCodeIntelligenceRange{
-				Range:       adjustedRange,
-				Definitions: adjustedDefinitions,
-				References:  adjustedReferences,
-				HoverText:   rn.HoverText,
-			})
-		}
-	}
-
-	return adjustedRanges, nil
-}
-
-const slowDefinitionsRequestThreshold = time.Second
-
-// Definitions returns the list of source locations that define the symbol at the given position.
-// This may include remote definitions if the remote repository is also indexed. If there are multiple
-// bundles associated with this resolver, the definitions from the first bundle with any results will
-// be returned.
-func (r *queryResolver) Definitions(ctx context.Context, line, character int) (_ []AdjustedLocation, err error) {
-	ctx, endObservation := observeResolver(ctx, &err, "Definitions", r.operations.definitions, slowDefinitionsRequestThreshold, observation.Args{
-		LogFields: []log.Field{
-			log.Int("repositoryID", r.repositoryID),
-			log.String("commit", r.commit),
-			log.String("path", r.path),
-			log.String("uploadIDs", strings.Join(r.uploadIDs(), ", ")),
-			log.Int("line", line),
-			log.Int("character", character),
-		},
-	})
-	defer endObservation()
-
-	position := lsifstore.Position{Line: line, Character: character}
-
-	for i := range r.uploads {
-		adjustedPath, adjustedPosition, ok, err := r.positionAdjuster.AdjustPosition(ctx, r.uploads[i].Commit, r.path, position, false)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-
-		locations, err := r.codeIntelAPI.Definitions(ctx, adjustedPath, adjustedPosition.Line, adjustedPosition.Character, r.uploads[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		if len(locations) == 0 {
-			continue
-		}
-
-		return r.adjustLocations(ctx, locations)
-	}
-
-	return nil, nil
-}
-
-const slowReferencesRequestThreshold = time.Second
-
-// References returns the list of source locations that reference the symbol at the given position.
-// This may include references from other dumps and repositories. If there are multiple bundles
-// associated with this resolver, results from all bundles will be concatenated and returned.
-func (r *queryResolver) References(ctx context.Context, line, character, limit int, rawCursor string) (_ []AdjustedLocation, _ string, err error) {
-	ctx, endObservation := observeResolver(ctx, &err, "References", r.operations.references, slowReferencesRequestThreshold, observation.Args{
-		LogFields: []log.Field{
-			log.Int("repositoryID", r.repositoryID),
-			log.String("commit", r.commit),
-			log.String("path", r.path),
-			log.String("uploadIDs", strings.Join(r.uploadIDs(), ", ")),
-			log.Int("line", line),
-			log.Int("character", character),
-		},
-	})
-	defer endObservation()
-
-	position := lsifstore.Position{Line: line, Character: character}
-
-	// Decode a map of upload ids to the next url that serves
-	// the new page of results. This may not include an entry
-	// for every upload if their result sets have already been
-	// exhausted.
-	cursors, err := readCursor(rawCursor)
-	if err != nil {
-		return nil, "", err
-	}
-
-	// We need to maintain a symmetric map for the next page
-	// of results that we can encode into the endCursor of
-	// this request.
-	newCursors := map[int]string{}
-
-	var allLocations []codeintelapi.ResolvedLocation
-	for i := range r.uploads {
-		rawCursor := ""
-		if cursor, ok := cursors[r.uploads[i].ID]; ok {
-			rawCursor = cursor
-		} else if len(cursors) != 0 {
-			// Result set is exhausted or newer than the first page
-			// of results. Skip anything from this upload as it will
-			// have duplicate results, or it will be out of order.
-			continue
-		}
-
-		adjustedPath, adjustedPosition, ok, err := r.positionAdjuster.AdjustPosition(ctx, r.uploads[i].Commit, r.path, position, false)
-		if err != nil {
-			return nil, "", err
-		}
-		if !ok {
-			continue
-		}
-
-		cursor, err := codeintelapi.DecodeOrCreateCursor(ctx, adjustedPath, adjustedPosition.Line, adjustedPosition.Character, r.uploads[i].ID, rawCursor, r.dbStore, r.lsifStore)
-		if err != nil {
-			return nil, "", err
-		}
-
-		locations, newCursor, hasNewCursor, err := r.codeIntelAPI.References(ctx, r.repositoryID, r.commit, limit, cursor)
-		if err != nil {
-			return nil, "", err
-		}
-
-		allLocations = append(allLocations, locations...)
-		if hasNewCursor {
-			newCursors[r.uploads[i].ID] = codeintelapi.EncodeCursor(newCursor)
-		}
-	}
-
-	endCursor, err := makeCursor(newCursors)
-	if err != nil {
-		return nil, "", err
-	}
-
-	adjustedLocations, err := r.adjustLocations(ctx, allLocations)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return adjustedLocations, endCursor, nil
-}
-
-const slowHoverRequestThreshold = time.Second
-
-// Hover returns the hover text and range for the symbol at the given position. If there are
-// multiple bundles associated with this resolver, the hover text and range from the first
-// bundle with any results will be returned.
-func (r *queryResolver) Hover(ctx context.Context, line, character int) (_ string, _ lsifstore.Range, _ bool, err error) {
-	ctx, endObservation := observeResolver(ctx, &err, "Hover", r.operations.hover, slowHoverRequestThreshold, observation.Args{
-		LogFields: []log.Field{
-			log.Int("repositoryID", r.repositoryID),
-			log.String("commit", r.commit),
-			log.String("path", r.path),
-			log.String("uploadIDs", strings.Join(r.uploadIDs(), ", ")),
-			log.Int("line", line),
-			log.Int("character", character),
-		},
-	})
-	defer endObservation()
-
-	position := lsifstore.Position{Line: line, Character: character}
-
-	for i := range r.uploads {
-		adjustedPath, adjustedPosition, ok, err := r.positionAdjuster.AdjustPosition(ctx, r.uploads[i].Commit, r.path, position, false)
-		if err != nil {
-			return "", lsifstore.Range{}, false, err
-		}
-		if !ok {
-			continue
-		}
-
-		text, rn, exists, err := r.codeIntelAPI.Hover(ctx, adjustedPath, adjustedPosition.Line, adjustedPosition.Character, r.uploads[i].ID)
-		if err != nil {
-			return "", lsifstore.Range{}, false, err
-		}
-		if !exists || text == "" {
-			continue
-		}
-
-		if _, adjustedRange, ok, err := r.positionAdjuster.AdjustRange(ctx, r.uploads[i].Commit, r.path, rn, true); err != nil {
-			return "", lsifstore.Range{}, false, err
-		} else if ok {
-			return text, adjustedRange, true, nil
-		}
-
-		// Failed to adjust range. This _might_ happen in cases where the LSIF range
-		// spans multiple lines which intersect a diff; the hover position on an earlier
-		// line may not be edited, but the ending line of the expression may have been
-		// edited or removed. This is rare and unfortunate, and we'll skip the result
-		// in this case because we have low confidence that it will be rendered correctly.
-		continue
-	}
-
-	return "", lsifstore.Range{}, false, nil
-}
-
-const slowDiagnosticsRequestThreshold = time.Second
-
-// Diagnostics returns the diagnostics for documents with the given path prefix. If there are
-// multiple bundles associated with this resolver, results from all bundles will be concatenated
-// and returned.
-func (r *queryResolver) Diagnostics(ctx context.Context, limit int) (_ []AdjustedDiagnostic, _ int, err error) {
-	ctx, endObservation := observeResolver(ctx, &err, "Diagnostics", r.operations.diagnostics, slowDiagnosticsRequestThreshold, observation.Args{
-		LogFields: []log.Field{
-			log.Int("repositoryID", r.repositoryID),
-			log.String("commit", r.commit),
-			log.String("path", r.path),
-			log.String("uploadIDs", strings.Join(r.uploadIDs(), ", ")),
-			log.Int("limit", limit),
-		},
-	})
-	defer endObservation()
-
-	totalCount := 0
-	var allDiagnostics []codeintelapi.ResolvedDiagnostic
-	for i := range r.uploads {
-		adjustedPath, ok, err := r.positionAdjuster.AdjustPath(ctx, r.uploads[i].Commit, r.path, false)
-		if err != nil {
-			return nil, 0, err
-		}
-		if !ok {
-			continue
-		}
-
-		l := limit - len(allDiagnostics)
-		if l < 0 {
-			l = 0
-		}
-
-		diagnostics, count, err := r.codeIntelAPI.Diagnostics(ctx, adjustedPath, r.uploads[i].ID, l, 0)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		totalCount += count
-		allDiagnostics = append(allDiagnostics, diagnostics...)
-	}
-
-	adjustedDiagnostics := make([]AdjustedDiagnostic, 0, len(allDiagnostics))
-	for i := range allDiagnostics {
-		clientRange := lsifstore.Range{
-			Start: lsifstore.Position{Line: allDiagnostics[i].Diagnostic.StartLine, Character: allDiagnostics[i].Diagnostic.StartCharacter},
-			End:   lsifstore.Position{Line: allDiagnostics[i].Diagnostic.EndLine, Character: allDiagnostics[i].Diagnostic.EndCharacter},
-		}
-
-		adjustedCommit, adjustedRange, err := r.adjustRange(ctx, allDiagnostics[i].Dump.RepositoryID, allDiagnostics[i].Dump.Commit, allDiagnostics[i].Diagnostic.Path, clientRange)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		adjustedDiagnostics = append(adjustedDiagnostics, AdjustedDiagnostic{
-			Diagnostic:     allDiagnostics[i].Diagnostic,
-			Dump:           allDiagnostics[i].Dump,
-			AdjustedCommit: adjustedCommit,
-			AdjustedRange:  adjustedRange,
-		})
-	}
-
-	return adjustedDiagnostics, totalCount, nil
-}
-
 // uploadIDs returns a slice of this query's matched upload identifiers.
 func (r *queryResolver) uploadIDs() []string {
 	uploadIDs := make([]string, 0, len(r.uploads))
@@ -411,19 +97,27 @@ func (r *queryResolver) uploadIDs() []string {
 	return uploadIDs
 }
 
-// adjustLocations translates a list of resolved locations (relative to the indexed commit) into a list of
-// equivalent locations in the requested commit.
-func (r *queryResolver) adjustLocations(ctx context.Context, locations []codeintelapi.ResolvedLocation) ([]AdjustedLocation, error) {
-	adjustedLocations := make([]AdjustedLocation, 0, len(locations))
-	for i := range locations {
-		adjustedCommit, adjustedRange, err := r.adjustRange(ctx, locations[i].Dump.RepositoryID, locations[i].Dump.Commit, locations[i].Path, locations[i].Range)
+// adjustLocations translates a list of locations into a list of equivalent locations in the requested commit.
+func (r *queryResolver) adjustLocations(ctx context.Context, dump store.Dump, locations []lsifstore.Location) ([]AdjustedLocation, error) {
+	var resolvedLocations []codeintelapi.ResolvedLocation
+	for _, location := range locations {
+		resolvedLocations = append(resolvedLocations, codeintelapi.ResolvedLocation{
+			Dump:  dump,
+			Path:  dump.Root + location.Path,
+			Range: location.Range,
+		})
+	}
+
+	adjustedLocations := make([]AdjustedLocation, 0, len(resolvedLocations))
+	for i := range resolvedLocations {
+		adjustedCommit, adjustedRange, err := r.adjustRange(ctx, resolvedLocations[i].Dump.RepositoryID, resolvedLocations[i].Dump.Commit, resolvedLocations[i].Path, resolvedLocations[i].Range)
 		if err != nil {
 			return nil, err
 		}
 
 		adjustedLocations = append(adjustedLocations, AdjustedLocation{
-			Dump:           locations[i].Dump,
-			Path:           locations[i].Path,
+			Dump:           resolvedLocations[i].Dump,
+			Path:           resolvedLocations[i].Path,
 			AdjustedCommit: adjustedCommit,
 			AdjustedRange:  adjustedRange,
 		})
@@ -446,31 +140,4 @@ func (r *queryResolver) adjustRange(ctx context.Context, repositoryID int, commi
 	}
 
 	return commit, rx, nil
-}
-
-// readCursor decodes a cursor into a map from upload ids to URLs that serves the next page of results.
-func readCursor(after string) (map[int]string, error) {
-	if after == "" {
-		return nil, nil
-	}
-
-	var cursors map[int]string
-	if err := json.Unmarshal([]byte(after), &cursors); err != nil {
-		return nil, err
-	}
-	return cursors, nil
-}
-
-// makeCursor encodes a map from upload ids to URLs that serves the next page of results into a single string
-// that can be sent back for use in cursor pagination.
-func makeCursor(cursors map[int]string) (string, error) {
-	if len(cursors) == 0 {
-		return "", nil
-	}
-
-	encoded, err := json.Marshal(cursors)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
 }

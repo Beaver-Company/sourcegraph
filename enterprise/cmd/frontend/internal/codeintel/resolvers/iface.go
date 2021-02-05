@@ -21,6 +21,11 @@ type CodeIntelAPI interface {
 	Diagnostics(ctx context.Context, prefix string, uploadID, limit, offset int) ([]api.ResolvedDiagnostic, int, error)
 }
 
+type GitserverClient interface {
+	CommitExists(ctx context.Context, repositoryID int, commit string) (bool, error)
+	CommitGraph(ctx context.Context, repositoryID int, options gitserver.CommitGraphOptions) (*gitserver.CommitGraph, error)
+}
+
 type DBStore interface {
 	gitserver.DBStore
 

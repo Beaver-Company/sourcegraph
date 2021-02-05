@@ -34,12 +34,13 @@ type Resolver interface {
 }
 
 type resolver struct {
-	dbStore       DBStore
-	lsifStore     LSIFStore
-	codeIntelAPI  CodeIntelAPI
-	indexEnqueuer IndexEnqueuer
-	hunkCache     HunkCache
-	operations    *operations
+	dbStore         DBStore
+	lsifStore       LSIFStore
+	codeIntelAPI    CodeIntelAPI
+	gitserverClient GitserverClient
+	indexEnqueuer   IndexEnqueuer
+	hunkCache       HunkCache
+	operations      *operations
 }
 
 // NewResolver creates a new resolver with the given services.
@@ -47,17 +48,19 @@ func NewResolver(
 	dbStore DBStore,
 	lsifStore LSIFStore,
 	codeIntelAPI CodeIntelAPI,
+	gitserverClient GitserverClient,
 	indexEnqueuer IndexEnqueuer,
 	hunkCache HunkCache,
 	observationContext *observation.Context,
 ) Resolver {
 	return &resolver{
-		dbStore:       dbStore,
-		lsifStore:     lsifStore,
-		codeIntelAPI:  codeIntelAPI,
-		indexEnqueuer: indexEnqueuer,
-		hunkCache:     hunkCache,
-		operations:    newOperations(observationContext),
+		dbStore:         dbStore,
+		lsifStore:       lsifStore,
+		codeIntelAPI:    codeIntelAPI,
+		gitserverClient: gitserverClient,
+		indexEnqueuer:   indexEnqueuer,
+		hunkCache:       hunkCache,
+		operations:      newOperations(observationContext),
 	}
 }
 

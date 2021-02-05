@@ -72,6 +72,7 @@ func newResolver(ctx context.Context, observationContext *observation.Context) (
 		&resolvers.DBStoreShim{services.dbStore},
 		services.lsifStore,
 		services.api,
+		services.gitserverClient,
 		services.indexEnqueuer,
 		hunkCache,
 		observationContext,
