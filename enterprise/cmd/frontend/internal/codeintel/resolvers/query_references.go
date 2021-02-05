@@ -8,12 +8,17 @@ import (
 
 	"github.com/opentracing/opentracing-go/log"
 
+	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/bloomfilter"
 	store "github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/dbstore"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/lsifstore"
 	"github.com/sourcegraph/sourcegraph/internal/observation"
 )
 
 const slowReferencesRequestThreshold = time.Second
+
+//
+// TODO - paginate
+//
 
 // References returns the list of source locations that reference the symbol at the given position.
 // This may include references from other dumps and repositories. If there are multiple bundles
@@ -116,43 +121,33 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 		var orderedMonikers []QualifiedMoniker
 		for _, monikers := range rangeMonikers {
 			for _, moniker := range monikers {
-				if moniker.PackageInformationID != "" {
-					packageInformationData, _, err := r.lsifStore.PackageInformation(
-						ctx,
-						worklist[i].Upload.ID,
-						strings.TrimPrefix(worklist[i].AdjustedPath, worklist[i].Upload.Root),
-						string(moniker.PackageInformationID),
-					)
-					if err != nil {
-						return nil, "", err
-					}
-
-					orderedMonikers = append(orderedMonikers, QualifiedMoniker{
-						MonikerData:            moniker,
-						PackageInformationData: packageInformationData,
-					})
+				if moniker.PackageInformationID == "" {
+					continue
 				}
+
+				packageInformationData, _, err := r.lsifStore.PackageInformation(
+					ctx,
+					worklist[i].Upload.ID,
+					strings.TrimPrefix(worklist[i].AdjustedPath, worklist[i].Upload.Root),
+					string(moniker.PackageInformationID),
+				)
+				if err != nil {
+					return nil, "", err
+				}
+
+				orderedMonikers = append(orderedMonikers, QualifiedMoniker{
+					MonikerData:            moniker,
+					PackageInformationData: packageInformationData,
+				})
 			}
 		}
 
 		worklist[i].OrderedMonikers = orderedMonikers
 	}
 
-	// TODO - redocument
-	//
 	// Phase 4: For every slice of work that has monikers attached from the phase above, we perform
-	// a moniker query on each index that defines one of those monikers. This phase returns the set
-	// of references in the defining index; this handles the case where a user requested references
-	// on a non-definition that is defined in another index.
-	//
-	//
-	// Phase 5: For every slice of work that has monikers attached from the phase above, we perform
-	// a moniker query on each index that references one of those monikers. This phase returns the
-	// set of references within the same repository (but outside of the source index).
-	//
-	// Phase 6: For every slice of work that has monikers attached from the phase above, we perform
-	// a moniker query on each index that references one of those monikers. This phase returns the
-	// set of references outside of the source repository.
+	// a moniker query on all other indexes. This returns references to the symbol across the universe
+	// of repositories known to this instance.
 
 	for i := range worklist {
 		for _, moniker := range worklist[i].OrderedMonikers {
@@ -161,15 +156,30 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 				return nil, "", err
 			}
 
-			// TODO(efritz) - commit check
-			// TODO(efritz) - bloom filter check
-
 			for _, reference := range references {
-				upload, exists, err := r.dbStore.GetDumpByID(ctx, reference.DumpID)
+				if len(reference.Filter) != 0 {
+					includesIdentifier, err := bloomfilter.DecodeAndTestFilter(reference.Filter, moniker.Identifier)
+					if err != nil {
+						return nil, "", err
+					}
+					if !includesIdentifier {
+						continue
+					}
+				}
+
+				upload, uploadExists, err := r.dbStore.GetDumpByID(ctx, reference.DumpID)
 				if err != nil {
 					return nil, "", err
 				}
-				if !exists {
+				if !uploadExists {
+					continue
+				}
+
+				commitExists, err := r.cachedCommitChecker.Exists(ctx, upload.RepositoryID, upload.Commit)
+				if err != nil {
+					return nil, "", err
+				}
+				if !commitExists {
 					continue
 				}
 
@@ -195,7 +205,7 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	var allAdjustedLocations []AdjustedLocation
 	for i := range worklist {
 		for j := range worklist[i].QualifiedLocations {
-			// TODO _ cleanup
+			// TODO - cleanup
 			var lx []lsifstore.Location
 			for _, l := range worklist[i].QualifiedLocations[j].Locations {
 				h := hashLocation(worklist[i].Upload.ID, l)
@@ -222,9 +232,6 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 
 	return allAdjustedLocations, "", nil
 }
-
-//
-// TODO
 
 func hashLocation(uploadID int, location lsifstore.Location) string {
 	return fmt.Sprintf(

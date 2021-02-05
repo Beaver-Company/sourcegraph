@@ -154,7 +154,9 @@ func (r *queryResolver) Definitions(ctx context.Context, line, character int) (_
 					continue
 				}
 
+				// TODO - hoist and document
 				const defintionMonikersLimit = 100
+
 				locations, _, err := r.lsifStore.MonikerResults(ctx, definitionUpload.ID, "definitions", moniker.Scheme, moniker.Identifier, 0, defintionMonikersLimit)
 				if err != nil {
 					return nil, err

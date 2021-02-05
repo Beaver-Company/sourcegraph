@@ -49,15 +49,15 @@ type QueryResolver interface {
 }
 
 type queryResolver struct {
-	dbStore          DBStore
-	lsifStore        LSIFStore
-	codeIntelAPI     CodeIntelAPI
-	positionAdjuster PositionAdjuster
-	repositoryID     int
-	commit           string
-	path             string
-	uploads          []store.Dump
-	operations       *operations
+	dbStore             DBStore
+	lsifStore           LSIFStore
+	cachedCommitChecker *cachedCommitChecker
+	positionAdjuster    PositionAdjuster
+	repositoryID        int
+	commit              string
+	path                string
+	uploads             []store.Dump
+	operations          *operations
 }
 
 // NewQueryResolver create a new query resolver with the given services. The methods of this
@@ -66,7 +66,7 @@ type queryResolver struct {
 func NewQueryResolver(
 	dbStore DBStore,
 	lsifStore LSIFStore,
-	codeIntelAPI CodeIntelAPI,
+	cachedCommitChecker *cachedCommitChecker,
 	positionAdjuster PositionAdjuster,
 	repositoryID int,
 	commit string,
@@ -75,15 +75,15 @@ func NewQueryResolver(
 	operations *operations,
 ) QueryResolver {
 	return &queryResolver{
-		dbStore:          dbStore,
-		lsifStore:        lsifStore,
-		codeIntelAPI:     codeIntelAPI,
-		positionAdjuster: positionAdjuster,
-		operations:       operations,
-		repositoryID:     repositoryID,
-		commit:           commit,
-		path:             path,
-		uploads:          uploads,
+		dbStore:             dbStore,
+		lsifStore:           lsifStore,
+		cachedCommitChecker: cachedCommitChecker,
+		positionAdjuster:    positionAdjuster,
+		operations:          operations,
+		repositoryID:        repositoryID,
+		commit:              commit,
+		path:                path,
+		uploads:             uploads,
 	}
 }
 

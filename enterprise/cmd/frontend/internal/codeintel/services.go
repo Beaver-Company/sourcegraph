@@ -11,8 +11,6 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/sourcegraph/sourcegraph/enterprise/cmd/frontend/internal/codeintel/api"
-	codeintelapi "github.com/sourcegraph/sourcegraph/enterprise/cmd/frontend/internal/codeintel/api"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/autoindex/enqueuer"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/gitserver"
 	store "github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/dbstore"
@@ -30,7 +28,6 @@ var services struct {
 	uploadStore     uploadstore.Store
 	gitserverClient *gitserver.Client
 	indexEnqueuer   *enqueuer.IndexEnqueuer
-	api             *codeintelapi.CodeIntelAPI
 	err             error
 }
 
@@ -64,9 +61,6 @@ func initServices(ctx context.Context) error {
 		// Initialize gitserver client
 		gitserverClient := gitserver.New(dbStore, observationContext)
 
-		// Initialize internal codeintel API
-		api := codeintelapi.New(&api.DBStoreShim{dbStore}, lsifStore, gitserverClient, observationContext)
-
 		// Initialize the index enqueuer
 		indexEnqueuer := enqueuer.NewIndexEnqueuer(&enqueuer.DBStoreShim{dbStore}, gitserverClient, observationContext)
 
@@ -74,7 +68,6 @@ func initServices(ctx context.Context) error {
 		services.lsifStore = lsifStore
 		services.uploadStore = uploadStore
 		services.gitserverClient = gitserverClient
-		services.api = api
 		services.indexEnqueuer = indexEnqueuer
 	})
 
