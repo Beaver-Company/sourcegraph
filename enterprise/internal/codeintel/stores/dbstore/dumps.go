@@ -82,6 +82,44 @@ func scanFirstDump(rows *sql.Rows, err error) (Dump, bool, error) {
 	return dumps[0], true, nil
 }
 
+// TODO - test
+// GetDumpByIDs returns a set of dump by identifiers.
+func (s *Store) GetDumpByIDs(ctx context.Context, ids []int) (_ []Dump, err error) {
+	// TODO - observe
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	var idx []*sqlf.Query
+	for _, id := range ids {
+		idx = append(idx, sqlf.Sprintf("%s", id))
+	}
+
+	return scanDumps(s.Store.Query(ctx, sqlf.Sprintf(getDumpByIDsQuery, sqlf.Join(idx, ", "))))
+}
+
+const getDumpByIDsQuery = `
+-- source: enterprise/internal/codeintel/stores/dbstore/dumps.go:GetDumpByID
+SELECT
+	d.id,
+	d.commit,
+	d.root,
+	` + visibleAtTipFragment + ` AS visible_at_tip,
+	d.uploaded_at,
+	d.state,
+	d.failure_message,
+	d.started_at,
+	d.finished_at,
+	d.process_after,
+	d.num_resets,
+	d.num_failures,
+	d.repository_id,
+	d.repository_name,
+	d.indexer,
+	d.associated_index_id
+FROM lsif_dumps_with_repository_name d WHERE d.id IN (%s)
+`
+
 // GetDumpByID returns a dump by its identifier and boolean flag indicating its existence.
 func (s *Store) GetDumpByID(ctx context.Context, id int) (_ Dump, _ bool, err error) {
 	ctx, endObservation := s.operations.getDumpByID.With(ctx, &err, observation.Args{LogFields: []log.Field{

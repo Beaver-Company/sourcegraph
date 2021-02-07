@@ -130,6 +130,12 @@ type PackageReference struct {
 	Filter  []byte // a bloom filter of identifiers imported by this dependent
 }
 
+// TODO - document
+type DumpAndFilter struct {
+	DumpID int
+	Filter []byte // a bloom filter of identifiers imported by this dependent
+}
+
 // Location is an LSP-like location scoped to a dump.
 type Location struct {
 	DumpID int

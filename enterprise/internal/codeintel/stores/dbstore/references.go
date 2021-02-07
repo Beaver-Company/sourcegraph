@@ -39,20 +39,37 @@ func scanPackageReferences(rows *sql.Rows, queryErr error) (_ []lsifstore.Packag
 	return references, nil
 }
 
+// scanDumpAndFilter scans a slice of dump and filter values from the return value of `*Store.query`.
+func scanDumpAndFilter(rows *sql.Rows, queryErr error) (_ []lsifstore.DumpAndFilter, err error) {
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	defer func() { err = basestore.CloseRows(rows, err) }()
+
+	var dumpAndFilters []lsifstore.DumpAndFilter
+	for rows.Next() {
+		var reference lsifstore.DumpAndFilter
+		if err := rows.Scan(&reference.DumpID, &reference.Filter); err != nil {
+			return nil, err
+		}
+
+		dumpAndFilters = append(dumpAndFilters, reference)
+	}
+
+	return dumpAndFilters, nil
+}
+
 // TODO - rename
 // TODO - paginate
 // TODO - document
 // TODO - test
-func (s *Store) AllTheStuff(ctx context.Context, repositoryID int, commit string, uploadID int, scheme, name, version string) (_ []lsifstore.PackageReference, err error) {
+func (s *Store) AllTheStuff(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error) {
 	// TODO - observe
 
-	// TODO - inline this
-	q := makeVisibleUploadsQuery(repositoryID, commit)
-
-	return scanPackageReferences(s.Query(ctx, sqlf.Sprintf(
+	return scanDumpAndFilter(s.Query(ctx, sqlf.Sprintf(
 		allTheStuffQuery,
-		scheme, name, version, uploadID,
-		scheme, name, version, q, repositoryID, repositoryID,
+		scheme, name, version,
+		scheme, name, version, makeVisibleUploadsQuery(repositoryID, commit), repositoryID, // TODO - inline this
 	)))
 }
 
@@ -62,54 +79,36 @@ func (s *Store) AllTheStuff(ctx context.Context, repositoryID int, commit string
 const allTheStuffQuery = `
 -- source: enterprise/internal/codeintel/stores/dbstore/references.go:AllTheStuff
 (
-SELECT
-	d.id,
-	r.scheme,
-	r.name,
-	r.version,
-	NULL as filter
-FROM lsif_packages r
-LEFT JOIN
-	lsif_dumps_with_repository_name d ON d.id = r.dump_id
-WHERE
-	r.scheme = %s AND
-	r.name = %s AND
-	r.version = %s AND
-	d.id != %s
-ORDER BY d.uploaded_at DESC
+	SELECT p.dump_id, NULL as filter
+	FROM lsif_packages p
+	WHERE
+		p.scheme = %s AND
+		p.name = %s AND
+		p.version = %s
 )
 UNION
 (
-SELECT
-	d.id,
-	r.scheme,
-	r.name,
-	r.version,
-	r.filter
-FROM lsif_references r
-LEFT JOIN
-	lsif_dumps_with_repository_name d ON d.id = r.dump_id
-WHERE
-	r.scheme = %s AND
-	r.name = %s AND
-	r.version = %s AND (
-		r.dump_id IN (%s) OR (
-			d.repository_id != %s AND
-			EXISTS (
-				SELECT
-					1
-				FROM
-					lsif_uploads_visible_at_tip
-				WHERE
-					repository_id = d.repository_id AND
-					upload_id = d.id
+	SELECT r.dump_id, r.filter
+	FROM lsif_references r
+	LEFT JOIN lsif_dumps d ON d.id = r.dump_id
+	WHERE
+		r.scheme = %s AND
+		r.name = %s AND
+		r.version = %s AND
+		(
+			r.dump_id IN (%s) OR (
+				EXISTS (
+					SELECT
+						1
+					FROM
+						lsif_uploads_visible_at_tip
+					WHERE
+						upload_id = d.id AND
+						repository_id = d.repository_id AND
+						d.repository_id != %s
+				)
 			)
 		)
-	)
-ORDER BY
-	d.repository_id = %s DESC,
-	d.repository_id,
-	d.root
 )
 `
 

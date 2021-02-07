@@ -119,6 +119,7 @@ func (r *queryResolver) Definitions(ctx context.Context, line, character int) (_
 				return nil, err
 			}
 
+			// TODO - deduplicate here as well
 			var orderedMonikers []lsifstore.MonikerData
 			for _, monikers := range rangeMonikers {
 				for _, moniker := range monikers {
@@ -136,6 +137,7 @@ func (r *queryResolver) Definitions(ctx context.Context, line, character int) (_
 
 		for i := range worklist {
 			for _, moniker := range worklist[i].OrderedMonikers {
+				// TODO - group these queries
 				pid, _, err := r.lsifStore.PackageInformation(
 					ctx,
 					worklist[i].Upload.ID,
@@ -157,6 +159,8 @@ func (r *queryResolver) Definitions(ctx context.Context, line, character int) (_
 				// TODO - hoist and document
 				const defintionMonikersLimit = 100
 
+				// TODO - find a way to batch these
+				// TODO - share with references if possible
 				locations, _, err := r.lsifStore.MonikerResults(ctx, definitionUpload.ID, "definitions", moniker.Scheme, moniker.Identifier, 0, defintionMonikersLimit)
 				if err != nil {
 					return nil, err
