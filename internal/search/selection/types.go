@@ -11,12 +11,14 @@ const (
 	Unknown Type = iota
 	Repository
 	File
+	Commit
 )
 
 var mapTypeToString = map[Type]string{
 	Unknown:    "unknown",
 	Repository: "repository",
 	File:       "file",
+	Commit:     "commit",
 }
 
 var mapStringToType = func() map[string]Type {
