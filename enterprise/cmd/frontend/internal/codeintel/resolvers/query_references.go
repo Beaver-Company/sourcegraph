@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inconshreveable/log15"
 	"github.com/opentracing/opentracing-go/log"
 
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/bloomfilter"
@@ -55,8 +54,6 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	//
 	//
 
-	locationSet := NewLocationSet()
-
 	var qualifiedLocations []QualifiedLocations
 	for i := range worklist {
 		locations, err := r.lsifStore.References(
@@ -68,10 +65,6 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 		)
 		if err != nil {
 			return nil, "", err
-		}
-
-		for _, location := range locations {
-			_ = locationSet.Add(location)
 		}
 
 		if len(locations) > 0 {
@@ -103,28 +96,18 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	//
 	//
 
+outer:
 	for _, location := range locations {
-		if !locationSet.Add(location) {
-			var dumpIDs1 []int
-			for i := range worklist {
-				dumpIDs1 = append(dumpIDs1, worklist[i].Upload.ID)
+		for i := range worklist {
+			// TODO - need to adjust root here
+			if worklist[i].Upload.ID == location.DumpID && r.path == location.Path {
+				// TODO - do a better range comparison
+				if location.Range.Start.Line == line {
+					if location.Range.Start.Character <= character && character <= location.Range.End.Character {
+						continue outer
+					}
+				}
 			}
-			var dumpIDs2 []int
-			for k := range uploadMap {
-				dumpIDs2 = append(dumpIDs2, k)
-			}
-
-			log15.Warn(
-				"duplicate",
-				"source_path", r.path,
-				"dest_dump", location.DumpID,
-				"dest_path", location.Path,
-				"dumpIDs1", dumpIDs1,
-				"dumpIDs2", dumpIDs2,
-				"monikers", orderedMonikers,
-			)
-
-			continue
 		}
 
 		if n := len(qualifiedLocations); n == 0 || qualifiedLocations[n-1].Upload.ID != location.DumpID {
@@ -298,96 +281,85 @@ func (s *QualifiedMonikerSet) Add(qualifiedMoniker QualifiedMoniker) bool {
 // TODO - rename
 // TODO - refactor
 func (r *queryResolver) bathsalts(ctx context.Context, worklist []sliceOfWork, orderedMonikers []QualifiedMoniker) (map[int]store.Dump, error) {
-	var packageDumpAndFilters []lsifstore.DumpAndFilter
+	var dfs1 []lsifstore.DumpAndFilter
+	var dfs2 []lsifstore.DumpAndFilter
 	for _, moniker := range orderedMonikers {
-		// TODO - batch these
-		references, err := r.dbStore.AllTheStuffX(ctx, r.repositoryID, r.commit, moniker.Scheme, moniker.Name, moniker.Version)
+		// TODO - batch these (will reduce duplicates)
+		references1, err := r.dbStore.AllTheStuffX(ctx, r.repositoryID, r.commit, moniker.Scheme, moniker.Name, moniker.Version)
 		if err != nil {
 			return nil, err
 		}
 
-		packageDumpAndFilters = append(packageDumpAndFilters, references...)
-	}
-
-	var referenceDumpAndFilters []lsifstore.DumpAndFilter
-	for _, moniker := range orderedMonikers {
-		// TODO - batch these
-		references, err := r.dbStore.AllTheStuff(ctx, r.repositoryID, r.commit, moniker.Scheme, moniker.Name, moniker.Version)
+		// TODO - batch these (will reduce duplicates)
+		references2, err := r.dbStore.AllTheStuff(ctx, r.repositoryID, r.commit, moniker.Scheme, moniker.Name, moniker.Version)
 		if err != nil {
 			return nil, err
 		}
 
-		referenceDumpAndFilters = append(referenceDumpAndFilters, references...)
+		dfs1 = append(dfs1, references1...)
+		dfs2 = append(dfs2, references2...)
 	}
 
-	// TODO - make a datastructure for this as well?
-	// TODO - clean this up
-	var dumps []int
 	filters := map[int][][]byte{}
-
-	for _, reference := range referenceDumpAndFilters {
-		if _, ok := filters[reference.DumpID]; !ok {
-			dumps = append(dumps, reference.DumpID)
-		}
-
+	for _, reference := range dfs2 {
 		filters[reference.DumpID] = append(filters[reference.DumpID], reference.Filter)
 	}
-	// outery:
-	for _, reference := range packageDumpAndFilters {
-		// for i := range worklist {
-		// 	if worklist[i].Upload.ID == reference.DumpID {
-		// 		continue outery
-		// 	}
-		// }
-		if _, ok := filters[reference.DumpID]; !ok {
-			dumps = append(dumps, reference.DumpID)
+o:
+	for _, reference := range dfs1 {
+		for i := range worklist {
+			if reference.DumpID == worklist[i].Upload.ID {
+				continue o
+			}
 		}
-
 		filters[reference.DumpID] = [][]byte{nil}
 	}
 
 	var dumpIDs []int
-dl:
-	for _, dumpID := range dumps {
-		for _, filter := range filters[dumpID] {
-			if len(filter) == 0 {
-				dumpIDs = append(dumpIDs, dumpID)
-				continue dl
-			}
+	for dumpID, filterx := range filters {
+		matchesSome := false
 
-			for _, moniker := range orderedMonikers {
-				includesIdentifier, err := bloomfilter.DecodeAndTestFilter(filter, moniker.Identifier)
-				if err != nil {
-					return nil, err
-				}
-				if includesIdentifier {
-					dumpIDs = append(dumpIDs, dumpID)
-					continue dl
+		for _, filter := range filterx {
+			if len(filter) == 0 {
+				matchesSome = true
+			} else {
+				// TODO - batch test
+				for _, moniker := range orderedMonikers {
+					includesIdentifier, err := bloomfilter.DecodeAndTestFilter(filter, moniker.Identifier)
+					if err != nil {
+						return nil, err
+					}
+					if includesIdentifier {
+						matchesSome = true
+					}
 				}
 			}
 		}
+
+		if matchesSome {
+			dumpIDs = append(dumpIDs, dumpID)
+		}
 	}
 
-	temp := dumpIDs
-	dumpIDs = dumpIDs[:0]
-
-outerx:
-	for _, dumpID := range temp {
+	uploadMap := map[int]store.Dump{}
+	var dumpIDsQ []int
+	for _, dumpID := range dumpIDs {
+		found := false
 		for i := range worklist {
 			if dumpID == worklist[i].Upload.ID {
-				continue outerx
+				found = true
+				uploadMap[dumpID] = worklist[i].Upload
 			}
 		}
-
-		dumpIDs = append(dumpIDs, dumpID)
+		if !found {
+			dumpIDsQ = append(dumpIDsQ, dumpID)
+		}
 	}
 
-	uploads, err := r.dbStore.GetDumpByIDs(ctx, dumpIDs)
+	uploads, err := r.dbStore.GetDumpByIDs(ctx, dumpIDsQ)
 	if err != nil {
 		return nil, err
 	}
 
-	uploadMap := map[int]store.Dump{}
 	for _, upload := range uploads {
 		commitExists, err := r.cachedCommitChecker.Exists(ctx, upload.RepositoryID, upload.Commit)
 		if err != nil {
@@ -398,10 +370,6 @@ outerx:
 		}
 
 		uploadMap[upload.ID] = upload
-	}
-
-	for i := range worklist {
-		uploadMap[worklist[i].Upload.ID] = worklist[i].Upload
 	}
 
 	return uploadMap, nil
@@ -415,32 +383,4 @@ outerx:
 type QualifiedLocations struct {
 	Upload    store.Dump
 	Locations []lsifstore.Location
-}
-
-type LocationSet struct {
-	locationHashMap map[string]struct{}
-}
-
-func NewLocationSet() *LocationSet {
-	return &LocationSet{
-		locationHashMap: map[string]struct{}{},
-	}
-}
-
-func (s *LocationSet) Add(location lsifstore.Location) bool {
-	hash := fmt.Sprintf(
-		"%s:%d:%d:%d:%d",
-		location.Path,
-		location.Range.Start.Line,
-		location.Range.Start.Character,
-		location.Range.End.Line,
-		location.Range.End.Character,
-	)
-
-	if _, ok := s.locationHashMap[hash]; ok {
-		return false
-	}
-
-	s.locationHashMap[hash] = struct{}{}
-	return true
 }
