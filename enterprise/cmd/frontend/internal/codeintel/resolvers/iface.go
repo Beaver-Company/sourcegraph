@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/sourcegraph/sourcegraph/enterprise/cmd/frontend/internal/codeintel/api"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/autoindex/config"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/gitserver"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/dbstore"
@@ -28,8 +27,8 @@ type DBStore interface {
 	FindClosestDumps(ctx context.Context, repositoryID int, commit, path string, rootMustEnclosePath bool, indexer string) ([]dbstore.Dump, error)
 	FindClosestDumpsFromGraphFragment(ctx context.Context, repositoryID int, commit, path string, rootMustEnclosePath bool, indexer string, graph *gitserver.CommitGraph) ([]dbstore.Dump, error)
 	GetPackage(ctx context.Context, scheme, name, version string) (dbstore.Dump, bool, error)
-	AllTheStuffX(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error)
-	AllTheStuff(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error)
+	PackageIDs(ctx context.Context, monikers []dbstore.TemporaryMonikerStruct) (_ []int, err error)
+	ReferenceIDsAndFilters(ctx context.Context, repositoryID int, commit string, monikers []dbstore.TemporaryMonikerStruct) (_ map[int][][]byte, err error)
 	HasRepository(ctx context.Context, repositoryID int) (bool, error)
 	HasCommit(ctx context.Context, repositoryID int, commit string) (bool, error)
 	MarkRepositoryAsDirty(ctx context.Context, repositoryID int) error
@@ -42,7 +41,15 @@ type DBStore interface {
 }
 
 type LSIFStore interface {
-	api.LSIFStore
+	Exists(ctx context.Context, bundleID int, path string) (bool, error)
+	Ranges(ctx context.Context, bundleID int, path string, startLine, endLine int) ([]lsifstore.CodeIntelligenceRange, error)
+	Definitions(ctx context.Context, bundleID int, path string, line, character int) ([]lsifstore.Location, error)
+	References(ctx context.Context, bundleID int, path string, line, character int) ([]lsifstore.Location, error)
+	Hover(ctx context.Context, bundleID int, path string, line, character int) (string, lsifstore.Range, bool, error)
+	Diagnostics(ctx context.Context, bundleID int, prefix string, skip, take int) ([]lsifstore.Diagnostic, int, error)
+	MonikersByPosition(ctx context.Context, bundleID int, path string, line, character int) ([][]lsifstore.MonikerData, error)
+	MonikerResults(ctx context.Context, bundleID int, tableName, scheme, identifier string, skip, take int) ([]lsifstore.Location, int, error)
+	PackageInformation(ctx context.Context, bundleID int, path string, packageInformationID string) (lsifstore.PackageInformationData, bool, error)
 	BulkMonikerResults(ctx context.Context, tableName string, args []lsifstore.BulkMonikerArgs, skip, take int) (_ []lsifstore.Location, _ int, err error)
 }
 

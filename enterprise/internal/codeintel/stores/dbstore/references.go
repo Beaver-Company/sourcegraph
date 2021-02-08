@@ -13,218 +13,89 @@ import (
 	"github.com/sourcegraph/sourcegraph/internal/observation"
 )
 
-// scanPackageReferences scans a slice of package references from the return value of `*Store.query`.
-func scanPackageReferences(rows *sql.Rows, queryErr error) (_ []lsifstore.PackageReference, err error) {
+// scanIdentifierFilterMap scans a map of upload identifiers to identifier filters paired with
+// that upload from the return value of `*Store.query`.
+func scanIdentifierFilterMap(rows *sql.Rows, queryErr error) (_ map[int][][]byte, err error) {
 	if queryErr != nil {
 		return nil, queryErr
 	}
 	defer func() { err = basestore.CloseRows(rows, err) }()
 
-	var references []lsifstore.PackageReference
+	filters := map[int][][]byte{}
 	for rows.Next() {
-		var reference lsifstore.PackageReference
-		if err := rows.Scan(
-			&reference.DumpID,
-			&reference.Scheme,
-			&reference.Name,
-			&reference.Version,
-			&reference.Filter,
-		); err != nil {
+		var dumpID int
+		var filter []byte
+		if err := rows.Scan(&dumpID, &filter); err != nil {
 			return nil, err
 		}
 
-		references = append(references, reference)
+		filters[dumpID] = append(filters[dumpID], filter)
 	}
 
-	return references, nil
-}
-
-// scanDumpAndFilter scans a slice of dump and filter values from the return value of `*Store.query`.
-func scanDumpAndFilter(rows *sql.Rows, queryErr error) (_ []lsifstore.DumpAndFilter, err error) {
-	if queryErr != nil {
-		return nil, queryErr
-	}
-	defer func() { err = basestore.CloseRows(rows, err) }()
-
-	var dumpAndFilters []lsifstore.DumpAndFilter
-	for rows.Next() {
-		var reference lsifstore.DumpAndFilter
-		if err := rows.Scan(&reference.DumpID, &reference.Filter); err != nil {
-			return nil, err
-		}
-
-		dumpAndFilters = append(dumpAndFilters, reference)
-	}
-
-	return dumpAndFilters, nil
+	return filters, nil
 }
 
 // TODO - rename
-// TODO - paginate
-// TODO - document
-// TODO - test
-func (s *Store) AllTheStuffX(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error) {
-	// TODO - observe
-
-	return scanDumpAndFilter(s.Query(ctx, sqlf.Sprintf(
-		allTheStuffXQuery,
-		scheme, name, version,
-	)))
+type TemporaryMonikerStruct struct {
+	Scheme  string
+	Name    string
+	Version string
 }
 
-// TODO - reformat
-// TODO - check efficiency
+// TODO - document, test
+func (s *Store) PackageIDs(ctx context.Context, monikers []TemporaryMonikerStruct) (_ []int, err error) {
+	// TODO - observe
 
-const allTheStuffXQuery = `
--- source: enterprise/internal/codeintel/stores/dbstore/references.go:AllTheStuffX
-SELECT p.dump_id, NULL as filter
-FROM lsif_packages p
-WHERE
-	p.scheme = %s AND
-	p.name = %s AND
-	p.version = %s
+	if len(monikers) == 0 {
+		return nil, nil
+	}
+
+	qs := make([]*sqlf.Query, 0, len(monikers))
+	for _, moniker := range monikers {
+		qs = append(qs, sqlf.Sprintf("(%s, %s, %s)", moniker.Scheme, moniker.Name, moniker.Version))
+	}
+
+	return basestore.ScanInts(s.Query(ctx, sqlf.Sprintf(packageIDsQuery, sqlf.Join(qs, ", "))))
+}
+
+const packageIDsQuery = `
+-- source: enterprise/internal/codeintel/stores/dbstore/references.go:PackageIDs
+SELECT p.dump_id FROM lsif_packages p WHERE (p.scheme, p.name, p.version) IN (%s)
 `
 
-// TODO - rename
-// TODO - paginate
-// TODO - document
-// TODO - test
-func (s *Store) AllTheStuff(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error) {
+// TODO - document, test
+// TODO - batch
+func (s *Store) ReferenceIDsAndFilters(ctx context.Context, repositoryID int, commit string, monikers []TemporaryMonikerStruct) (_ map[int][][]byte, err error) {
 	// TODO - observe
 
-	return scanDumpAndFilter(s.Query(ctx, sqlf.Sprintf(
-		allTheStuffQuery,
-		scheme, name, version, makeVisibleUploadsQuery(repositoryID, commit), repositoryID, // TODO - inline this
+	if len(monikers) == 0 {
+		return nil, nil
+	}
+
+	qs := make([]*sqlf.Query, 0, len(monikers))
+	for _, moniker := range monikers {
+		qs = append(qs, sqlf.Sprintf("(%s, %s, %s)", moniker.Scheme, moniker.Name, moniker.Version))
+	}
+
+	// TODO - group in the database
+	return scanIdentifierFilterMap(s.Query(ctx, sqlf.Sprintf(
+		referenceIDsAndFiltersQuery,
+		makeVisibleUploadsQuery(repositoryID, commit), repositoryID,
+		sqlf.Join(qs, ", "),
 	)))
 }
 
-// TODO - reformat
-// TODO - check efficiency
-
-const allTheStuffQuery = `
--- source: enterprise/internal/codeintel/stores/dbstore/references.go:AllTheStuff
+const referenceIDsAndFiltersQuery = `
+-- source: enterprise/internal/codeintel/stores/dbstore/references.go:ReferenceIDsAndFilters
+WITH visible_uploads AS (
+	(%s)
+	UNION
+	(SELECT uvt.upload_id FROM lsif_uploads_visible_at_tip uvt WHERE uvt.repository_id != %s)
+)
 SELECT r.dump_id, r.filter
 FROM lsif_references r
 LEFT JOIN lsif_dumps d ON d.id = r.dump_id
-WHERE
-	r.scheme = %s AND
-	r.name = %s AND
-	r.version = %s AND
-	(
-		r.dump_id IN (%s) OR (
-			EXISTS (
-				SELECT
-					1
-				FROM
-					lsif_uploads_visible_at_tip
-				WHERE
-					upload_id = d.id AND
-					repository_id = d.repository_id AND
-					d.repository_id != %s
-			)
-		)
-	)
-`
-
-// SameRepoPager returns a ReferencePager for dumps that belong to the given repository and commit and reference the package with the
-// given scheme, name, and version.
-func (s *Store) SameRepoPager(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit int) (_ int, _ ReferencePager, err error) {
-	ctx, endObservation := s.operations.sameRepoPager.With(ctx, &err, observation.Args{LogFields: []log.Field{
-		log.Int("repositoryID", repositoryID),
-		log.String("commit", commit),
-		log.String("scheme", scheme),
-		log.String("name", name),
-		log.String("version", version),
-		log.Int("limit", limit),
-	}})
-	defer endObservation(1, observation.Args{})
-
-	tx, err := s.transact(ctx)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	conds := []*sqlf.Query{
-		sqlf.Sprintf("r.scheme = %s", scheme),
-		sqlf.Sprintf("r.name = %s", name),
-		sqlf.Sprintf("r.version = %s", version),
-		sqlf.Sprintf("r.dump_id IN (%s)", makeVisibleUploadsQuery(repositoryID, commit)),
-	}
-
-	totalCount, _, err := basestore.ScanFirstInt(tx.Store.Query(ctx, sqlf.Sprintf(sameRepoPagerCountQuery, sqlf.Join(conds, " AND "))))
-	if err != nil {
-		return 0, nil, tx.Done(err)
-	}
-
-	pageFromOffset := func(ctx context.Context, offset int) ([]lsifstore.PackageReference, error) {
-		return scanPackageReferences(tx.Store.Query(ctx, sqlf.Sprintf(sameRepoPagerQuery, sqlf.Join(conds, " AND "), limit, offset)))
-	}
-
-	return totalCount, newReferencePager(pageFromOffset, tx.Done), nil
-}
-
-const sameRepoPagerCountQuery = `
--- source: enterprise/internal/codeintel/stores/dbstore/references.go:SameRepoPager
-SELECT COUNT(*) FROM lsif_references r WHERE %s
-`
-
-const sameRepoPagerQuery = `
--- source: enterprise/internal/codeintel/stores/dbstore/references.go:SameRepoPager
-SELECT d.id, r.scheme, r.name, r.version, r.filter FROM lsif_references r
-LEFT JOIN lsif_dumps_with_repository_name d ON d.id = r.dump_id
-WHERE %s ORDER BY d.root LIMIT %d OFFSET %d
-`
-
-// PackageReferencePager returns a ReferencePager for dumps that belong to a remote repository (distinct from the given repository id)
-// and reference the package with the given scheme, name, and version. All resulting dumps are visible at the tip of their repository's
-// default branch.
-func (s *Store) PackageReferencePager(ctx context.Context, scheme, name, version string, repositoryID, limit int) (_ int, _ ReferencePager, err error) {
-	ctx, endObservation := s.operations.packageReferencePager.With(ctx, &err, observation.Args{LogFields: []log.Field{
-		log.String("scheme", scheme),
-		log.String("name", name),
-		log.String("version", version),
-		log.Int("repositoryID", repositoryID),
-		log.Int("limit", limit),
-	}})
-	defer endObservation(1, observation.Args{})
-
-	tx, err := s.transact(ctx)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	conds := []*sqlf.Query{
-		sqlf.Sprintf("r.scheme = %s", scheme),
-		sqlf.Sprintf("r.name = %s", name),
-		sqlf.Sprintf("r.version = %s", version),
-		sqlf.Sprintf("d.repository_id != %s", repositoryID),
-		sqlf.Sprintf("EXISTS (SELECT 1 FROM lsif_uploads_visible_at_tip WHERE repository_id = d.repository_id AND upload_id = d.id)"),
-	}
-
-	totalCount, _, err := basestore.ScanFirstInt(tx.Store.Query(ctx, sqlf.Sprintf(packageReferencePagerCountQuery, sqlf.Join(conds, " AND "))))
-	if err != nil {
-		return 0, nil, tx.Done(err)
-	}
-
-	pageFromOffset := func(ctx context.Context, offset int) ([]lsifstore.PackageReference, error) {
-		return scanPackageReferences(tx.Store.Query(ctx, sqlf.Sprintf(packageReferencePagerQuery, sqlf.Join(conds, " AND "), limit, offset)))
-	}
-
-	return totalCount, newReferencePager(pageFromOffset, tx.Done), nil
-}
-
-const packageReferencePagerCountQuery = `
--- source: enterprise/internal/codeintel/stores/dbstore/references.go:PackageReferencePager
-SELECT COUNT(*) FROM lsif_references r
-LEFT JOIN lsif_dumps_with_repository_name d ON d.id = r.dump_id
-WHERE %s
-`
-
-const packageReferencePagerQuery = `
--- source: enterprise/internal/codeintel/stores/dbstore/references.go:PackageReferencePager
-SELECT d.id, r.scheme, r.name, r.version, r.filter FROM lsif_references r
-LEFT JOIN lsif_dumps_with_repository_name d ON d.id = r.dump_id
-WHERE %s ORDER BY d.repository_id, d.root LIMIT %d OFFSET %d
+WHERE (r.scheme, r.name, r.version) IN (%s) AND r.dump_id IN (SELECT * FROM visible_uploads)
 `
 
 // UpdatePackageReferences inserts reference data tied to the given upload.

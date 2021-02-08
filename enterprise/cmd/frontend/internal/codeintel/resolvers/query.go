@@ -4,11 +4,17 @@ import (
 	"context"
 	"strconv"
 
-	codeintelapi "github.com/sourcegraph/sourcegraph/enterprise/cmd/frontend/internal/codeintel/api"
 	store "github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/dbstore"
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/stores/lsifstore"
 )
 
+type ResolvedLocation struct {
+	Dump  store.Dump
+	Path  string
+	Range lsifstore.Range
+}
+
+// TODO - redocument
 // AdjustedLocation is similar to a codeintelapi.ResolvedLocation, but with fields denoting
 // the commit and range adjusted for the target commit (when the requested commit is not indexed).
 type AdjustedLocation struct {
@@ -18,6 +24,7 @@ type AdjustedLocation struct {
 	AdjustedRange  lsifstore.Range
 }
 
+// TODO - redocument
 // AdjustedDiagnostic is similar to a codeintelapi.ResolvedDiagnostic, but with fields denoting
 // the commit and range adjusted for the target commit (when the requested commit is not indexed).
 type AdjustedDiagnostic struct {
@@ -27,6 +34,7 @@ type AdjustedDiagnostic struct {
 	AdjustedRange  lsifstore.Range
 }
 
+// TODO - redocument
 // AdjustedCodeIntelligenceRange is similar to a codeintelapi.CodeIntelligenceRange,
 // but with adjusted definition and reference locations.
 type AdjustedCodeIntelligenceRange struct {
@@ -99,9 +107,9 @@ func (r *queryResolver) uploadIDs() []string {
 
 // adjustLocations translates a list of locations into a list of equivalent locations in the requested commit.
 func (r *queryResolver) adjustLocations(ctx context.Context, dump store.Dump, locations []lsifstore.Location) ([]AdjustedLocation, error) {
-	var resolvedLocations []codeintelapi.ResolvedLocation
+	var resolvedLocations []ResolvedLocation
 	for _, location := range locations {
-		resolvedLocations = append(resolvedLocations, codeintelapi.ResolvedLocation{
+		resolvedLocations = append(resolvedLocations, ResolvedLocation{
 			Dump:  dump,
 			Path:  dump.Root + location.Path,
 			Range: location.Range,
@@ -140,4 +148,53 @@ func (r *queryResolver) adjustRange(ctx context.Context, repositoryID int, commi
 	}
 
 	return commit, rx, nil
+}
+
+//
+//
+
+type adjustedUpload struct {
+	Upload           store.Dump
+	AdjustedPath     string
+	AdjustedPosition lsifstore.Position
+}
+
+func (r *queryResolver) adjustUploads(ctx context.Context, line, character int) ([]adjustedUpload, error) {
+	position := lsifstore.Position{
+		Line:      line,
+		Character: character,
+	}
+
+	adjustedUploads := make([]adjustedUpload, 0, len(r.uploads))
+	for i := range r.uploads {
+		adjustedPath, adjustedPosition, ok, err := r.positionAdjuster.AdjustPosition(ctx, r.uploads[i].Commit, r.path, position, false)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+
+		adjustedUploads = append(adjustedUploads, adjustedUpload{
+			Upload:           r.uploads[i],
+			AdjustedPath:     adjustedPath,
+			AdjustedPosition: adjustedPosition,
+		})
+	}
+
+	return adjustedUploads, nil
+}
+
+func (r *queryResolver) adjustLocation(ctx context.Context, dump store.Dump, location lsifstore.Location) (AdjustedLocation, error) {
+	adjustedCommit, adjustedRange, err := r.adjustRange(ctx, dump.RepositoryID, dump.Commit, dump.Root+location.Path, location.Range)
+	if err != nil {
+		return AdjustedLocation{}, err
+	}
+
+	return AdjustedLocation{
+		Dump:           dump,
+		Path:           dump.Root + location.Path,
+		AdjustedCommit: adjustedCommit,
+		AdjustedRange:  adjustedRange,
+	}, nil
 }

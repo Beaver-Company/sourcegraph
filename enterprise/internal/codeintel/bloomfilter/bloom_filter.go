@@ -40,7 +40,7 @@ func CreateFilter(identifiers []string) ([]byte, error) {
 	return encodeFilter(buckets, int32(BloomFilterNumHashFunctions))
 }
 
-// decodeAndTestFilter decodes the filter and determines if identifier is a member of the underlying
+// DecodeAndTestFilter decodes the filter and determines if identifier is a member of the underlying
 // set. Returns an error if the encoded filter is malformed (improperly compressed or invalid JSON).
 func DecodeAndTestFilter(encodedFilter []byte, identifier string) (bool, error) {
 	buckets, numHashFunctions, err := decodeFilter(encodedFilter)
@@ -49,6 +49,22 @@ func DecodeAndTestFilter(encodedFilter []byte, identifier string) (bool, error) 
 	}
 
 	return testFilter(buckets, numHashFunctions, identifier), nil
+}
+
+// Decode decodes the filter and returns a function that can be called to test if a specific value
+// is a member of the underlying set. Returns an error if the encoded filter is malformed
+// (improperly compressed or invalid JSON).
+func Decode(encodedFilter []byte) (func(identifier string) bool, error) {
+	buckets, numHashFunctions, err := decodeFilter(encodedFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	test := func(identifier string) bool {
+		return testFilter(buckets, numHashFunctions, identifier)
+	}
+
+	return test, nil
 }
 
 // decodeFilter returns the buckets and the number of hash functions that were used to initially

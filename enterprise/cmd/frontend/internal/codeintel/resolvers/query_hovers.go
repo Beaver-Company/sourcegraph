@@ -41,8 +41,13 @@ func (r *queryResolver) Hover(ctx context.Context, line, character int) (_ strin
 			continue
 		}
 
-		pathInBundle := strings.TrimPrefix(adjustedPath, r.uploads[i].Root)
-		text, rn, exists, err := r.lsifStore.Hover(ctx, r.uploads[i].ID, pathInBundle, adjustedPosition.Line, adjustedPosition.Character)
+		text, rn, exists, err := r.lsifStore.Hover(
+			ctx,
+			r.uploads[i].ID,
+			strings.TrimPrefix(adjustedPath, r.uploads[i].Root),
+			adjustedPosition.Line,
+			adjustedPosition.Character,
+		)
 		if err != nil {
 			return "", lsifstore.Range{}, false, err
 		}

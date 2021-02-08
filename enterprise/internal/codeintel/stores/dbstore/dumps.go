@@ -346,6 +346,8 @@ UNION (
 )
 `
 
+// TODO - this is only used in tests now
+
 // makeVisibleUploadsQuery returns a SQL query returning the set of identifiers of uploads
 // visible from the given commit. This is done by removing the "shadowed" values created
 // by looking at a commit and it's ancestors visible commits.

@@ -2,7 +2,6 @@ package resolvers
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -17,38 +16,7 @@ import (
 
 const slowReferencesRequestThreshold = time.Second
 
-type QualifiedLocations struct {
-	Upload    store.Dump
-	Locations []lsifstore.Location
-}
-
-func rangeIncludesPosition(r lsifstore.Range, pos lsifstore.Position) bool {
-	if pos.Line < r.Start.Line {
-		return false
-	}
-
-	if pos.Line > r.End.Line {
-		return false
-	}
-
-	if pos.Line == r.Start.Line && pos.Character < r.Start.Character {
-		return false
-	}
-
-	if pos.Line == r.End.Line && pos.Character > r.End.Character {
-		return false
-	}
-
-	return true
-}
-
-//
-// TODO - paginate
-//
-
 // References returns the list of source locations that reference the symbol at the given position.
-// This may include references from other dumps and repositories. If there are multiple bundles
-// associated with this resolver, results from all bundles will be concatenated and returned.
 func (r *queryResolver) References(ctx context.Context, line, character, limit int, rawCursor string) (_ []AdjustedLocation, _ string, err error) {
 	ctx, endObservation := observeResolver(ctx, &err, "References", r.operations.references, slowReferencesRequestThreshold, observation.Args{
 		LogFields: []log.Field{
@@ -62,17 +30,16 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	})
 	defer endObservation()
 
-	worklist, err := r.adjustPathsForReferences(ctx, line, character)
+	//
+	// TODO - paginate
+	//
+
+	adjustedUploads, err := r.adjustUploads(ctx, line, character)
 	if err != nil {
 		return nil, "", err
 	}
 
-	orderedMonikers, err := r.getOrderedMonikers(ctx, worklist)
-	if err != nil {
-		return nil, "", err
-	}
-
-	uploadMap, err := r.getReferencingUploads(ctx, worklist, orderedMonikers)
+	orderedMonikers, err := r.getOrderedMonikers(ctx, adjustedUploads)
 	if err != nil {
 		return nil, "", err
 	}
@@ -80,29 +47,37 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	//
 	// TODO
 
-	var qualifiedLocations []QualifiedLocations
-	for i := range worklist {
+	var combinedLocations []AdjustedLocation
+
+	for i := range adjustedUploads {
 		locations, err := r.lsifStore.References(
 			ctx,
-			worklist[i].Upload.ID,
-			strings.TrimPrefix(worklist[i].AdjustedPath, worklist[i].Upload.Root),
-			worklist[i].AdjustedPosition.Line,
-			worklist[i].AdjustedPosition.Character,
+			adjustedUploads[i].Upload.ID,
+			strings.TrimPrefix(adjustedUploads[i].AdjustedPath, adjustedUploads[i].Upload.Root),
+			adjustedUploads[i].AdjustedPosition.Line,
+			adjustedUploads[i].AdjustedPosition.Character,
 		)
 		if err != nil {
 			return nil, "", err
 		}
 
-		if len(locations) > 0 {
-			qualifiedLocations = append(qualifiedLocations, QualifiedLocations{
-				Upload:    worklist[i].Upload,
-				Locations: locations,
-			})
+		for _, location := range locations {
+			adjustedLocation, err := r.adjustLocation(ctx, adjustedUploads[i].Upload, location)
+			if err != nil {
+				return nil, "", err
+			}
+
+			combinedLocations = append(combinedLocations, adjustedLocation)
 		}
 	}
 
 	//
 	// TODO
+
+	uploadMap, err := r.getUploadsWithReferences(ctx, adjustedUploads, orderedMonikers)
+	if err != nil {
+		return nil, "", err
+	}
 
 	var args []lsifstore.BulkMonikerArgs
 	for dumpID := range uploadMap {
@@ -122,35 +97,21 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	//
 	// TODO
 
-outer:
-	for _, location := range locations {
-		for i := range worklist {
-			if location.DumpID == worklist[i].Upload.ID && location.Path == worklist[i].AdjustedPath && rangeIncludesPosition(location.Range, worklist[i].AdjustedPosition) {
-				continue outer
-			}
-		}
-
-		if n := len(qualifiedLocations); n == 0 || qualifiedLocations[n-1].Upload.ID != location.DumpID {
-			qualifiedLocations = append(qualifiedLocations, QualifiedLocations{
-				Upload: uploadMap[location.DumpID],
-			})
-		}
-
-		n := len(qualifiedLocations) - 1
-		qualifiedLocations[n].Locations = append(qualifiedLocations[n].Locations, location)
+	for i := range adjustedUploads {
+		uploadMap[adjustedUploads[i].Upload.ID] = adjustedUploads[i].Upload
 	}
 
-	//
-	// TODO
+	for _, location := range locations {
+		if isSourceLocation(adjustedUploads, location) {
+			continue
+		}
 
-	var combinedLocations []AdjustedLocation // TODO - determine size (or use limit?)
-	for i := range qualifiedLocations {
-		adjustedLocations, err := r.adjustLocations(ctx, qualifiedLocations[i].Upload, qualifiedLocations[i].Locations)
+		adjustedLocation, err := r.adjustLocation(ctx, uploadMap[location.DumpID], location)
 		if err != nil {
 			return nil, "", err
 		}
 
-		combinedLocations = append(combinedLocations, adjustedLocations...)
+		combinedLocations = append(combinedLocations, adjustedLocation)
 	}
 
 	return combinedLocations, "", nil
@@ -158,75 +119,22 @@ outer:
 
 //
 //
-//
 
-// TODO - standardize this
-type sliceOfWork struct {
-	Upload           store.Dump
-	AdjustedPath     string
-	AdjustedPosition lsifstore.Position
-}
-
-// TODO - test
-// TODO - document
-// TODO - rename
-// TODO - refactor
-func (r *queryResolver) adjustPathsForReferences(ctx context.Context, line, character int) ([]sliceOfWork, error) {
-	position := lsifstore.Position{
-		Line:      line,
-		Character: character,
-	}
-
-	worklist := make([]sliceOfWork, 0, len(r.uploads))
-	for i := range r.uploads {
-		adjustedPath, adjustedPosition, ok, err := r.positionAdjuster.AdjustPosition(ctx, r.uploads[i].Commit, r.path, position, false)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-
-		worklist = append(worklist, sliceOfWork{
-			Upload:           r.uploads[i],
-			AdjustedPath:     adjustedPath,
-			AdjustedPosition: adjustedPosition,
-		})
-	}
-
-	return worklist, nil
-}
-
-//
-//
-//
-
-// TODO - move, rename
-type QualifiedMoniker struct {
+type qualifiedMoniker struct {
 	lsifstore.MonikerData
 	lsifstore.PackageInformationData
 }
 
-// TODO - test
-// TODO - document
-// TODO - rename
-// TODO - refactor
-func (r *queryResolver) getOrderedMonikers(ctx context.Context, worklist []sliceOfWork) ([]QualifiedMoniker, error) {
-	// TODO - redocument
-	// Phase 3: Continue the references search by looking in other indexes. The first step here
-	// is to fetch the monikers attached to the adjusted path and range for every slice of work.
-	// We also resolve the package information attached to the moniker in this phase. This phase
-	// populates the orderedMonikers.
+func (r *queryResolver) getOrderedMonikers(ctx context.Context, adjustedUploads []adjustedUpload) ([]qualifiedMoniker, error) {
+	monikerSet := newQualifiedMonikerSet()
 
-	monikerSet := NewQualifiedMonikerSet()
-
-	for i := range worklist {
+	for i := range adjustedUploads {
 		rangeMonikers, err := r.lsifStore.MonikersByPosition(
 			ctx,
-			worklist[i].Upload.ID,
-			strings.TrimPrefix(worklist[i].AdjustedPath, worklist[i].Upload.Root),
-			worklist[i].AdjustedPosition.Line,
-			worklist[i].AdjustedPosition.Character,
+			adjustedUploads[i].Upload.ID,
+			strings.TrimPrefix(adjustedUploads[i].AdjustedPath, adjustedUploads[i].Upload.Root),
+			adjustedUploads[i].AdjustedPosition.Line,
+			adjustedUploads[i].AdjustedPosition.Character,
 		)
 		if err != nil {
 			return nil, err
@@ -240,15 +148,15 @@ func (r *queryResolver) getOrderedMonikers(ctx context.Context, worklist []slice
 
 				packageInformationData, _, err := r.lsifStore.PackageInformation(
 					ctx,
-					worklist[i].Upload.ID,
-					strings.TrimPrefix(worklist[i].AdjustedPath, worklist[i].Upload.Root),
+					adjustedUploads[i].Upload.ID,
+					strings.TrimPrefix(adjustedUploads[i].AdjustedPath, adjustedUploads[i].Upload.Root),
 					string(moniker.PackageInformationID),
 				)
 				if err != nil {
 					return nil, err
 				}
 
-				monikerSet.Add(QualifiedMoniker{
+				monikerSet.add(qualifiedMoniker{
 					MonikerData:            moniker,
 					PackageInformationData: packageInformationData,
 				})
@@ -256,104 +164,91 @@ func (r *queryResolver) getOrderedMonikers(ctx context.Context, worklist []slice
 		}
 	}
 
-	return monikerSet.Monikers(), nil
+	return monikerSet.monikers, nil
 }
 
-type QualifiedMonikerSet struct {
-	monikers       []QualifiedMoniker
+type qualifiedMonikerSet struct {
+	monikers       []qualifiedMoniker
 	monikerHashMap map[string]struct{}
 }
 
-func NewQualifiedMonikerSet() *QualifiedMonikerSet {
-	return &QualifiedMonikerSet{
+func newQualifiedMonikerSet() *qualifiedMonikerSet {
+	return &qualifiedMonikerSet{
 		monikerHashMap: map[string]struct{}{},
 	}
 }
 
-func (s *QualifiedMonikerSet) Monikers() []QualifiedMoniker {
-	return s.monikers
-}
-
-func (s *QualifiedMonikerSet) Add(qualifiedMoniker QualifiedMoniker) {
-	monikerHash := fmt.Sprintf(
-		"%s:%s:%s:%s",
+func (s *qualifiedMonikerSet) add(qualifiedMoniker qualifiedMoniker) {
+	monikerHash := strings.Join([]string{
 		qualifiedMoniker.PackageInformationData.Name,
 		qualifiedMoniker.PackageInformationData.Version,
 		qualifiedMoniker.MonikerData.Scheme,
 		qualifiedMoniker.MonikerData.Identifier,
-	)
+	}, ":")
 
-	if _, ok := s.monikerHashMap[monikerHash]; !ok {
-		s.monikerHashMap[monikerHash] = struct{}{}
-		s.monikers = append(s.monikers, qualifiedMoniker)
+	if _, ok := s.monikerHashMap[monikerHash]; ok {
+		return
 	}
+
+	s.monikerHashMap[monikerHash] = struct{}{}
+	s.monikers = append(s.monikers, qualifiedMoniker)
 }
 
 //
 //
-//
 
-func (r *queryResolver) getReferencingUploads(ctx context.Context, worklist []sliceOfWork, orderedMonikers []QualifiedMoniker) (map[int]store.Dump, error) {
-	uids := map[int]dbstore.Dump{}
-	for i := range worklist {
-		uids[worklist[i].Upload.ID] = worklist[i].Upload
+func (r *queryResolver) getUploadsWithReferences(ctx context.Context, adjustedUpload []adjustedUpload, orderedMonikers []qualifiedMoniker) (map[int]store.Dump, error) {
+	uploadsByID := map[int]dbstore.Dump{}
+	for i := range adjustedUpload {
+		uploadsByID[adjustedUpload[i].Upload.ID] = adjustedUpload[i].Upload
 	}
 
-	var dfs2 []lsifstore.DumpAndFilter
+	var monikers []dbstore.TemporaryMonikerStruct
 	for _, moniker := range orderedMonikers {
-		// TODO - batch these (will reduce duplicates)
-		references2, err := r.dbStore.AllTheStuff(ctx, r.repositoryID, r.commit, moniker.Scheme, moniker.Name, moniker.Version)
-		if err != nil {
-			return nil, err
-		}
-
-		dfs2 = append(dfs2, references2...)
+		monikers = append(monikers, dbstore.TemporaryMonikerStruct{
+			Scheme:  moniker.Scheme,
+			Name:    moniker.Name,
+			Version: moniker.Version,
+		})
 	}
 
-	filters := map[int][][]byte{}
-	for _, reference := range dfs2 {
-		filters[reference.DumpID] = append(filters[reference.DumpID], reference.Filter)
+	packageIDs, err := r.dbStore.PackageIDs(ctx, monikers)
+	if err != nil {
+		return nil, err
 	}
 
-	var dfs1 []lsifstore.DumpAndFilter
-	for _, moniker := range orderedMonikers {
-		// TODO - batch these (will reduce duplicates)
-		references1, err := r.dbStore.AllTheStuffX(ctx, r.repositoryID, r.commit, moniker.Scheme, moniker.Name, moniker.Version)
-		if err != nil {
-			return nil, err
-		}
-		dfs1 = append(dfs1, references1...)
+	referenceIDsAndFilters, err := r.dbStore.ReferenceIDsAndFilters(ctx, r.repositoryID, r.commit, monikers)
+	if err != nil {
+		return nil, err
 	}
 
-	for _, reference := range dfs1 {
-		if _, ok := uids[reference.DumpID]; !ok {
-			filters[reference.DumpID] = [][]byte{nil}
-		}
+	filtersByUploadID := map[int][][]byte{}
+	for dumpID, filters := range referenceIDsAndFilters {
+		filtersByUploadID[dumpID] = append(filtersByUploadID[dumpID], filters...)
 	}
 
 	var dumpIDs []int
-	for dumpID, filterx := range filters {
-		matchesSome := false
+	for _, dumpID := range packageIDs {
+		if _, ok := uploadsByID[dumpID]; !ok {
+			dumpIDs = append(dumpIDs, dumpID)
+			delete(filtersByUploadID, dumpID)
+		}
+	}
 
-		for _, filter := range filterx {
-			if len(filter) == 0 {
-				matchesSome = true
-			} else {
-				// TODO - batch test
-				for _, moniker := range orderedMonikers {
-					includesIdentifier, err := bloomfilter.DecodeAndTestFilter(filter, moniker.Identifier)
-					if err != nil {
-						return nil, err
-					}
-					if includesIdentifier {
-						matchesSome = true
-					}
+outer:
+	for dumpID, filters := range filtersByUploadID {
+		for _, filter := range filters {
+			includesIdentifier, err := bloomfilter.Decode(filter)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, moniker := range orderedMonikers {
+				if includesIdentifier(moniker.Identifier) {
+					dumpIDs = append(dumpIDs, dumpID)
+					continue outer
 				}
 			}
-		}
-
-		if matchesSome {
-			dumpIDs = append(dumpIDs, dumpID)
 		}
 	}
 
@@ -361,7 +256,7 @@ func (r *queryResolver) getReferencingUploads(ctx context.Context, worklist []sl
 	var idsToFetch []int
 
 	for _, dumpID := range dumpIDs {
-		if dump, ok := uids[dumpID]; ok {
+		if dump, ok := uploadsByID[dumpID]; ok {
 			uploadMap[dumpID] = dump
 		} else {
 			idsToFetch = append(idsToFetch, dumpID)
@@ -386,4 +281,36 @@ func (r *queryResolver) getReferencingUploads(ctx context.Context, worklist []sl
 	}
 
 	return uploadMap, nil
+}
+
+func isSourceLocation(worklist []adjustedUpload, location lsifstore.Location) bool {
+	for i := range worklist {
+		if location.DumpID == worklist[i].Upload.ID && location.Path == worklist[i].AdjustedPath {
+			if rangeContainsPosition(location.Range, worklist[i].AdjustedPosition) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func rangeContainsPosition(r lsifstore.Range, pos lsifstore.Position) bool {
+	if pos.Line < r.Start.Line {
+		return false
+	}
+
+	if pos.Line > r.End.Line {
+		return false
+	}
+
+	if pos.Line == r.Start.Line && pos.Character < r.Start.Character {
+		return false
+	}
+
+	if pos.Line == r.End.Line && pos.Character > r.End.Character {
+		return false
+	}
+
+	return true
 }
