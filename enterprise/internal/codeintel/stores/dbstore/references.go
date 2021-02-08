@@ -63,12 +63,37 @@ func scanDumpAndFilter(rows *sql.Rows, queryErr error) (_ []lsifstore.DumpAndFil
 // TODO - paginate
 // TODO - document
 // TODO - test
+func (s *Store) AllTheStuffX(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error) {
+	// TODO - observe
+
+	return scanDumpAndFilter(s.Query(ctx, sqlf.Sprintf(
+		allTheStuffXQuery,
+		scheme, name, version,
+	)))
+}
+
+// TODO - reformat
+// TODO - check efficiency
+
+const allTheStuffXQuery = `
+-- source: enterprise/internal/codeintel/stores/dbstore/references.go:AllTheStuffX
+SELECT p.dump_id, NULL as filter
+FROM lsif_packages p
+WHERE
+	p.scheme = %s AND
+	p.name = %s AND
+	p.version = %s
+`
+
+// TODO - rename
+// TODO - paginate
+// TODO - document
+// TODO - test
 func (s *Store) AllTheStuff(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error) {
 	// TODO - observe
 
 	return scanDumpAndFilter(s.Query(ctx, sqlf.Sprintf(
 		allTheStuffQuery,
-		scheme, name, version,
 		scheme, name, version, makeVisibleUploadsQuery(repositoryID, commit), repositoryID, // TODO - inline this
 	)))
 }
@@ -78,38 +103,27 @@ func (s *Store) AllTheStuff(ctx context.Context, repositoryID int, commit, schem
 
 const allTheStuffQuery = `
 -- source: enterprise/internal/codeintel/stores/dbstore/references.go:AllTheStuff
-(
-	SELECT p.dump_id, NULL as filter
-	FROM lsif_packages p
-	WHERE
-		p.scheme = %s AND
-		p.name = %s AND
-		p.version = %s
-)
-UNION
-(
-	SELECT r.dump_id, r.filter
-	FROM lsif_references r
-	LEFT JOIN lsif_dumps d ON d.id = r.dump_id
-	WHERE
-		r.scheme = %s AND
-		r.name = %s AND
-		r.version = %s AND
-		(
-			r.dump_id IN (%s) OR (
-				EXISTS (
-					SELECT
-						1
-					FROM
-						lsif_uploads_visible_at_tip
-					WHERE
-						upload_id = d.id AND
-						repository_id = d.repository_id AND
-						d.repository_id != %s
-				)
+SELECT r.dump_id, r.filter
+FROM lsif_references r
+LEFT JOIN lsif_dumps d ON d.id = r.dump_id
+WHERE
+	r.scheme = %s AND
+	r.name = %s AND
+	r.version = %s AND
+	(
+		r.dump_id IN (%s) OR (
+			EXISTS (
+				SELECT
+					1
+				FROM
+					lsif_uploads_visible_at_tip
+				WHERE
+					upload_id = d.id AND
+					repository_id = d.repository_id AND
+					d.repository_id != %s
 			)
 		)
-)
+	)
 `
 
 // SameRepoPager returns a ReferencePager for dumps that belong to the given repository and commit and reference the package with the

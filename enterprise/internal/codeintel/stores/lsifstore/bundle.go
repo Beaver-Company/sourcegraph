@@ -280,6 +280,68 @@ func (s *Store) MonikersByPosition(ctx context.Context, bundleID int, path strin
 	return monikerData, nil
 }
 
+// TODO - rename
+type BulkMonikerArgs struct {
+	BundleID   int
+	Scheme     string
+	Identifier string
+}
+
+// TODO - document
+// TODO - test
+// TODO - paginate efficiently
+func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, args []BulkMonikerArgs, skip, take int) (_ []Location, _ int, err error) {
+	// TODO - observe
+
+	// TODO - rename
+	var things []*sqlf.Query
+	for _, arg := range args {
+		things = append(things, sqlf.Sprintf("(%s, %s, %s)", arg.BundleID, arg.Scheme, arg.Identifier))
+	}
+
+	locationData, err := s.scanQualifiedLocations(s.Store.Query(ctx, sqlf.Sprintf(
+		bulkMonikerResultsQuery,
+		sqlf.Sprintf(fmt.Sprintf("lsif_data_%s", tableName)),
+		sqlf.Join(things, ", "),
+	)))
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var locations []Location
+	for _, dx := range locationData {
+		for _, row := range dx.Locations {
+			locations = append(locations, Location{
+				DumpID: dx.DumpID,
+				Path:   row.URI,
+				Range:  newRange(row.StartLine, row.StartCharacter, row.EndLine, row.EndCharacter),
+			})
+		}
+	}
+	totalCount := len(locations)
+
+	if skip != 0 || take != 0 {
+		if lo := skip; lo >= len(locations) {
+			// Skip lands past result set, return nothing
+			locations = nil
+		} else {
+			hi := skip + take
+			if hi >= len(locations) {
+				hi = len(locations)
+			}
+
+			locations = locations[lo:hi]
+		}
+	}
+
+	return locations, totalCount, nil
+}
+
+const bulkMonikerResultsQuery = `
+-- source: enterprise/internal/codeintel/stores/lsifstore/bundles.go:BulkMonikerResults
+SELECT dump_id, scheme, identifier, data FROM %s WHERE (dump_id, scheme, identifier) IN (%s)
+`
+
 // MonikerResults returns the locations that define or reference the given moniker. This method
 // also returns the size of the complete result set to aid in pagination (along with skip and take).
 func (s *Store) MonikerResults(ctx context.Context, bundleID int, tableName, scheme, identifier string, skip, take int) (_ []Location, _ int, err error) {

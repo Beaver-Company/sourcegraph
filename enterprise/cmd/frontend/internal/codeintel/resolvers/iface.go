@@ -28,6 +28,7 @@ type DBStore interface {
 	FindClosestDumps(ctx context.Context, repositoryID int, commit, path string, rootMustEnclosePath bool, indexer string) ([]dbstore.Dump, error)
 	FindClosestDumpsFromGraphFragment(ctx context.Context, repositoryID int, commit, path string, rootMustEnclosePath bool, indexer string, graph *gitserver.CommitGraph) ([]dbstore.Dump, error)
 	GetPackage(ctx context.Context, scheme, name, version string) (dbstore.Dump, bool, error)
+	AllTheStuffX(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error)
 	AllTheStuff(ctx context.Context, repositoryID int, commit, scheme, name, version string) (_ []lsifstore.DumpAndFilter, err error)
 	HasRepository(ctx context.Context, repositoryID int) (bool, error)
 	HasCommit(ctx context.Context, repositoryID int, commit string) (bool, error)
@@ -42,6 +43,7 @@ type DBStore interface {
 
 type LSIFStore interface {
 	api.LSIFStore
+	BulkMonikerResults(ctx context.Context, tableName string, args []lsifstore.BulkMonikerArgs, skip, take int) (_ []lsifstore.Location, _ int, err error)
 }
 
 type IndexEnqueuer interface {

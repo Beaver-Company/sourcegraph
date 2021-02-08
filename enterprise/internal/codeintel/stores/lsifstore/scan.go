@@ -135,16 +135,17 @@ func (s *Store) scanSingleResultChunkDataObject(rows *sql.Rows) (QualifiedResult
 	return record, nil
 }
 
+// TODO - redocument
 // scanQualifiedResultChunkData reads moniker locations values from the given row object.
-func (s *Store) scanLocations(rows *sql.Rows, queryErr error) (_ []MonikerLocations, err error) {
+func (s *Store) scanQualifiedLocations(rows *sql.Rows, queryErr error) (_ []QualifiedMonikerLocations, err error) {
 	if queryErr != nil {
 		return nil, queryErr
 	}
 	defer func() { err = basestore.CloseRows(rows, err) }()
 
-	var values []MonikerLocations
+	var values []QualifiedMonikerLocations
 	for rows.Next() {
-		record, err := s.scanSingleMonikerLocationsObject(rows)
+		record, err := s.scanSingleQualifiedMonikerLocationsObject(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -153,6 +154,24 @@ func (s *Store) scanLocations(rows *sql.Rows, queryErr error) (_ []MonikerLocati
 	}
 
 	return values, nil
+}
+
+// scanSingleMonikerLocationsObject populates a moniker locations value from the
+// given cursor.
+func (s *Store) scanSingleQualifiedMonikerLocationsObject(rows *sql.Rows) (QualifiedMonikerLocations, error) {
+	var rawData []byte
+	var record QualifiedMonikerLocations
+	if err := rows.Scan(&record.DumpID, &record.Scheme, &record.Identifier, &rawData); err != nil {
+		return QualifiedMonikerLocations{}, err
+	}
+
+	data, err := s.serializer.UnmarshalLocations(rawData)
+	if err != nil {
+		return QualifiedMonikerLocations{}, err
+	}
+	record.Locations = data
+
+	return record, nil
 }
 
 // scanFirstLocations reads a moniker locations value from the given row object and
