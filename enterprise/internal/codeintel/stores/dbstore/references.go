@@ -35,15 +35,8 @@ func scanIdentifierFilterMap(rows *sql.Rows, queryErr error) (_ map[int][][]byte
 	return filters, nil
 }
 
-// TODO - rename
-type TemporaryMonikerStruct struct {
-	Scheme  string
-	Name    string
-	Version string
-}
-
 // TODO - document, test
-func (s *Store) PackageIDs(ctx context.Context, monikers []TemporaryMonikerStruct) (_ []int, err error) {
+func (s *Store) PackageIDs(ctx context.Context, monikers []lsifstore.QualifiedMonikerData) (_ []int, err error) {
 	// TODO - observe
 
 	if len(monikers) == 0 {
@@ -65,7 +58,7 @@ SELECT p.dump_id FROM lsif_packages p WHERE (p.scheme, p.name, p.version) IN (%s
 
 // TODO - document, test
 // TODO - batch
-func (s *Store) ReferenceIDsAndFilters(ctx context.Context, repositoryID int, commit string, monikers []TemporaryMonikerStruct) (_ map[int][][]byte, err error) {
+func (s *Store) ReferenceIDsAndFilters(ctx context.Context, repositoryID int, commit string, monikers []lsifstore.QualifiedMonikerData) (_ map[int][][]byte, err error) {
 	// TODO - observe
 
 	if len(monikers) == 0 {

@@ -96,14 +96,24 @@ func (r *queryResolver) Ranges(ctx context.Context, startLine, endLine int) (_ [
 				return nil, err
 			}
 
-			adjustedDefinitions, err := r.adjustLocations(ctx, worklist[i].Upload, rn.Definitions)
-			if err != nil {
-				return nil, err
+			adjustedDefinitions := make([]AdjustedLocation, 0, len(rn.Definitions))
+			for _, location := range rn.Definitions {
+				adjustedLocation, err := r.adjustLocation(ctx, worklist[i].Upload, location)
+				if err != nil {
+					return nil, err
+				}
+
+				adjustedDefinitions = append(adjustedDefinitions, adjustedLocation)
 			}
 
-			adjustedReferences, err := r.adjustLocations(ctx, worklist[i].Upload, rn.References)
-			if err != nil {
-				return nil, err
+			adjustedReferences := make([]AdjustedLocation, 0, len(rn.References))
+			for _, location := range rn.References {
+				adjustedLocation, err := r.adjustLocation(ctx, worklist[i].Upload, location)
+				if err != nil {
+					return nil, err
+				}
+
+				adjustedReferences = append(adjustedReferences, adjustedLocation)
 			}
 
 			ranges = append(ranges, AdjustedCodeIntelligenceRange{

@@ -14,9 +14,7 @@ import (
 
 const slowDiagnosticsRequestThreshold = time.Second
 
-// Diagnostics returns the diagnostics for documents with the given path prefix. If there are
-// multiple bundles associated with this resolver, results from all bundles will be concatenated
-// and returned.
+// Diagnostics returns the diagnostics for documents with the given path prefix.
 func (r *queryResolver) Diagnostics(ctx context.Context, limit int) (_ []AdjustedDiagnostic, _ int, err error) {
 	ctx, endObservation := observeResolver(ctx, &err, "Diagnostics", r.operations.diagnostics, slowDiagnosticsRequestThreshold, observation.Args{
 		LogFields: []log.Field{
@@ -28,6 +26,9 @@ func (r *queryResolver) Diagnostics(ctx context.Context, limit int) (_ []Adjuste
 		},
 	})
 	defer endObservation()
+
+	// TODO - log result size
+	// TODO - log more things here
 
 	type sliceOfWork struct {
 		Upload       store.Dump

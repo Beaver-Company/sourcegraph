@@ -50,6 +50,12 @@ type PackageInformationData struct {
 	Version string
 }
 
+// TODO - document
+type QualifiedMonikerData struct {
+	MonikerData
+	PackageInformationData
+}
+
 // DiagnosticData carries diagnostic information attached to a range within its
 // containing document.
 type DiagnosticData struct {

@@ -27,26 +27,26 @@ func (r *queryResolver) Hover(ctx context.Context, line, character int) (_ strin
 	})
 	defer endObservation()
 
-	position := lsifstore.Position{
-		Line:      line,
-		Character: character,
+	// TODO - log more things here
+
+	//
+	// TODO - document the following block
+
+	adjustedUploads, err := r.adjustUploads(ctx, line, character)
+	if err != nil {
+		return "", lsifstore.Range{}, false, err
 	}
 
-	for i := range r.uploads {
-		adjustedPath, adjustedPosition, ok, err := r.positionAdjuster.AdjustPosition(ctx, r.uploads[i].Commit, r.path, position, false)
-		if err != nil {
-			return "", lsifstore.Range{}, false, err
-		}
-		if !ok {
-			continue
-		}
+	//
+	// TODO - document the following block
 
+	for i := range adjustedUploads {
 		text, rn, exists, err := r.lsifStore.Hover(
 			ctx,
 			r.uploads[i].ID,
-			strings.TrimPrefix(adjustedPath, r.uploads[i].Root),
-			adjustedPosition.Line,
-			adjustedPosition.Character,
+			adjustedUploads[i].AdjustedPathInBundle,
+			adjustedUploads[i].AdjustedPosition.Line,
+			adjustedUploads[i].AdjustedPosition.Character,
 		)
 		if err != nil {
 			return "", lsifstore.Range{}, false, err
@@ -55,8 +55,8 @@ func (r *queryResolver) Hover(ctx context.Context, line, character int) (_ strin
 			continue
 		}
 
-		_, adjustedRange, ok, err := r.positionAdjuster.AdjustRange(ctx, r.uploads[i].Commit, r.path, rn, true)
-		if err != nil || !ok {
+		_, adjustedRange, err := r.adjustRange(ctx, r.uploads[i].RepositoryID, r.uploads[i].Commit, r.path, rn)
+		if err != nil {
 			return "", lsifstore.Range{}, false, err
 		}
 

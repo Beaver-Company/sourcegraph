@@ -280,32 +280,31 @@ func (s *Store) MonikersByPosition(ctx context.Context, bundleID int, path strin
 	return monikerData, nil
 }
 
-// TODO - rename
-type BulkMonikerArgs struct {
-	BundleID   int
-	Scheme     string
-	Identifier string
-}
-
 // TODO - document
 // TODO - test
 // TODO - paginate efficiently
-func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, args []BulkMonikerArgs, skip, take int) (_ []Location, _ int, err error) {
+func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, ids []int, args []MonikerData, limit, offset int) (_ []Location, _ int, err error) {
 	// TODO - observe
 
-	if len(args) == 0 {
+	if len(ids) == 0 || len(args) == 0 {
 		return nil, 0, nil
 	}
 
-	var qs []*sqlf.Query
+	var qs1 []*sqlf.Query
+	for _, id := range ids {
+		qs1 = append(qs1, sqlf.Sprintf("%s", id))
+	}
+
+	var qs2 []*sqlf.Query
 	for _, arg := range args {
-		qs = append(qs, sqlf.Sprintf("(%s, %s, %s)", arg.BundleID, arg.Scheme, arg.Identifier))
+		qs2 = append(qs2, sqlf.Sprintf("( %s, %s)", arg.Scheme, arg.Identifier))
 	}
 
 	locationData, err := s.scanQualifiedLocations(s.Store.Query(ctx, sqlf.Sprintf(
 		bulkMonikerResultsQuery,
 		sqlf.Sprintf(fmt.Sprintf("lsif_data_%s", tableName)),
-		sqlf.Join(qs, ", "),
+		sqlf.Join(qs1, ", "),
+		sqlf.Join(qs2, ", "),
 	)))
 	if err != nil {
 		return nil, 0, err
@@ -323,12 +322,12 @@ func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, args [
 	}
 	totalCount := len(locations)
 
-	if skip != 0 || take != 0 {
-		if lo := skip; lo >= len(locations) {
+	if offset != 0 || limit != 0 {
+		if lo := offset; lo >= len(locations) {
 			// Skip lands past result set, return nothing
 			locations = nil
 		} else {
-			hi := skip + take
+			hi := offset + limit
 			if hi >= len(locations) {
 				hi = len(locations)
 			}
@@ -342,7 +341,7 @@ func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, args [
 
 const bulkMonikerResultsQuery = `
 -- source: enterprise/internal/codeintel/stores/lsifstore/bundles.go:BulkMonikerResults
-SELECT dump_id, scheme, identifier, data FROM %s WHERE (dump_id, scheme, identifier) IN (%s)
+SELECT dump_id, scheme, identifier, data FROM %s WHERE dump_id IN (%s) AND (scheme, identifier) IN (%s)
 `
 
 // MonikerResults returns the locations that define or reference the given moniker. This method
