@@ -39,7 +39,7 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 		return nil, "", err
 	}
 
-	orderedMonikers, err := r.getOrderedMonikers(ctx, adjustedUploads)
+	orderedMonikers, err := r.getOrderedMonikers(ctx, adjustedUploads, "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -125,7 +125,7 @@ type qualifiedMoniker struct {
 	lsifstore.PackageInformationData
 }
 
-func (r *queryResolver) getOrderedMonikers(ctx context.Context, adjustedUploads []adjustedUpload) ([]qualifiedMoniker, error) {
+func (r *queryResolver) getOrderedMonikers(ctx context.Context, adjustedUploads []adjustedUpload, kind string) ([]qualifiedMoniker, error) {
 	monikerSet := newQualifiedMonikerSet()
 
 	for i := range adjustedUploads {
@@ -142,7 +142,7 @@ func (r *queryResolver) getOrderedMonikers(ctx context.Context, adjustedUploads 
 
 		for _, monikers := range rangeMonikers {
 			for _, moniker := range monikers {
-				if moniker.PackageInformationID == "" {
+				if moniker.PackageInformationID == "" || (kind != "" && moniker.Kind != kind) {
 					continue
 				}
 
@@ -197,10 +197,14 @@ func (s *qualifiedMonikerSet) add(qualifiedMoniker qualifiedMoniker) {
 //
 //
 
-func (r *queryResolver) getUploadsWithReferences(ctx context.Context, adjustedUpload []adjustedUpload, orderedMonikers []qualifiedMoniker) (map[int]store.Dump, error) {
+//
+// TODO - do not return a map
+//
+
+func (r *queryResolver) getUploadsWithReferences(ctx context.Context, adjustedUploads []adjustedUpload, orderedMonikers []qualifiedMoniker) (map[int]store.Dump, error) {
 	uploadsByID := map[int]dbstore.Dump{}
-	for i := range adjustedUpload {
-		uploadsByID[adjustedUpload[i].Upload.ID] = adjustedUpload[i].Upload
+	for i := range adjustedUploads {
+		uploadsByID[adjustedUploads[i].Upload.ID] = adjustedUploads[i].Upload
 	}
 
 	var monikers []dbstore.TemporaryMonikerStruct
@@ -263,10 +267,24 @@ outer:
 		}
 	}
 
-	uploads, err := r.dbStore.GetDumpByIDs(ctx, idsToFetch)
+	uploads, err := r.getUploads(ctx, idsToFetch)
 	if err != nil {
 		return nil, err
 	}
+	for _, upload := range uploads {
+		uploadMap[upload.ID] = upload
+	}
+
+	return uploadMap, nil
+}
+
+func (r *queryResolver) getUploads(ctx context.Context, ids []int) ([]store.Dump, error) {
+	uploads, err := r.dbStore.GetDumpByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := uploads[:0]
 
 	for _, upload := range uploads {
 		commitExists, err := r.cachedCommitChecker.Exists(ctx, upload.RepositoryID, upload.Commit)
@@ -277,10 +295,10 @@ outer:
 			continue
 		}
 
-		uploadMap[upload.ID] = upload
+		filtered = append(filtered, upload)
 	}
 
-	return uploadMap, nil
+	return filtered, nil
 }
 
 func isSourceLocation(worklist []adjustedUpload, location lsifstore.Location) bool {

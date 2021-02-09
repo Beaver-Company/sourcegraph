@@ -293,16 +293,19 @@ type BulkMonikerArgs struct {
 func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, args []BulkMonikerArgs, skip, take int) (_ []Location, _ int, err error) {
 	// TODO - observe
 
-	// TODO - rename
-	var things []*sqlf.Query
+	if len(args) == 0 {
+		return nil, 0, nil
+	}
+
+	var qs []*sqlf.Query
 	for _, arg := range args {
-		things = append(things, sqlf.Sprintf("(%s, %s, %s)", arg.BundleID, arg.Scheme, arg.Identifier))
+		qs = append(qs, sqlf.Sprintf("(%s, %s, %s)", arg.BundleID, arg.Scheme, arg.Identifier))
 	}
 
 	locationData, err := s.scanQualifiedLocations(s.Store.Query(ctx, sqlf.Sprintf(
 		bulkMonikerResultsQuery,
 		sqlf.Sprintf(fmt.Sprintf("lsif_data_%s", tableName)),
-		sqlf.Join(things, ", "),
+		sqlf.Join(qs, ", "),
 	)))
 	if err != nil {
 		return nil, 0, err
