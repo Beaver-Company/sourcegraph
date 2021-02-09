@@ -91,6 +91,25 @@ LEFT JOIN lsif_dumps d ON d.id = r.dump_id
 WHERE (r.scheme, r.name, r.version) IN (%s) AND r.dump_id IN (SELECT * FROM visible_uploads)
 `
 
+// UpdatePackages upserts package data tied to the given upload.
+func (s *Store) UpdatePackages(ctx context.Context, packages []lsifstore.Package) (err error) {
+	ctx, endObservation := s.operations.updatePackages.With(ctx, &err, observation.Args{LogFields: []log.Field{}})
+	defer endObservation(1, observation.Args{})
+
+	if len(packages) == 0 {
+		return nil
+	}
+
+	inserter := batch.NewBatchInserter(ctx, s.Store.Handle().DB(), "lsif_packages", "dump_id", "scheme", "name", "version")
+	for _, p := range packages {
+		if err := inserter.Insert(ctx, p.DumpID, p.Scheme, p.Name, p.Version); err != nil {
+			return err
+		}
+	}
+
+	return inserter.Flush(ctx)
+}
+
 // UpdatePackageReferences inserts reference data tied to the given upload.
 func (s *Store) UpdatePackageReferences(ctx context.Context, references []lsifstore.PackageReference) (err error) {
 	ctx, endObservation := s.operations.updatePackageReferences.With(ctx, &err, observation.Args{LogFields: []log.Field{}})
