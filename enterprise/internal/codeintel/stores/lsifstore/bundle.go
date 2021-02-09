@@ -281,8 +281,6 @@ func (s *Store) MonikersByPosition(ctx context.Context, bundleID int, path strin
 }
 
 // TODO - document
-// TODO - test
-// TODO - paginate efficiently
 func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, ids []int, args []MonikerData, limit, offset int) (_ []Location, _ int, err error) {
 	// TODO - observe
 
@@ -290,21 +288,21 @@ func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, ids []
 		return nil, 0, nil
 	}
 
-	var qs1 []*sqlf.Query
+	idQueries := make([]*sqlf.Query, 0, len(ids))
 	for _, id := range ids {
-		qs1 = append(qs1, sqlf.Sprintf("%s", id))
+		idQueries = append(idQueries, sqlf.Sprintf("%s", id))
 	}
 
-	var qs2 []*sqlf.Query
+	monikerQueries := make([]*sqlf.Query, 0, len(args))
 	for _, arg := range args {
-		qs2 = append(qs2, sqlf.Sprintf("( %s, %s)", arg.Scheme, arg.Identifier))
+		monikerQueries = append(monikerQueries, sqlf.Sprintf("(%s, %s)", arg.Scheme, arg.Identifier))
 	}
 
 	locationData, err := s.scanQualifiedLocations(s.Store.Query(ctx, sqlf.Sprintf(
 		bulkMonikerResultsQuery,
 		sqlf.Sprintf(fmt.Sprintf("lsif_data_%s", tableName)),
-		sqlf.Join(qs1, ", "),
-		sqlf.Join(qs2, ", "),
+		sqlf.Join(idQueries, ", "),
+		sqlf.Join(monikerQueries, ", "),
 	)))
 	if err != nil {
 		return nil, 0, err
@@ -322,6 +320,7 @@ func (s *Store) BulkMonikerResults(ctx context.Context, tableName string, ids []
 	}
 	totalCount := len(locations)
 
+	// TODO - paginate efficiently
 	if offset != 0 || limit != 0 {
 		if lo := offset; lo >= len(locations) {
 			// Skip lands past result set, return nothing

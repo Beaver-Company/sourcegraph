@@ -111,12 +111,6 @@ type LocationData struct {
 	EndCharacter   int
 }
 
-// TODO
-type QualifiedMonikerLocations struct {
-	DumpID int
-	MonikerLocations
-}
-
 // MonikerLocations pairs a moniker scheme and identifier with the set of locations
 // with that within a particular bundle.
 type MonikerLocations struct {

@@ -6,19 +6,19 @@ import (
 	"github.com/sourcegraph/sourcegraph/internal/database/basestore"
 )
 
-type QualifiedDocumentData struct {
+type qualifiedDocumentData struct {
 	UploadID int
 	KeyedDocumentData
 }
 
 // scanDocumentData reads qualified document data from the given row object.
-func (s *Store) scanDocumentData(rows *sql.Rows, queryErr error) (_ []QualifiedDocumentData, err error) {
+func (s *Store) scanDocumentData(rows *sql.Rows, queryErr error) (_ []qualifiedDocumentData, err error) {
 	if queryErr != nil {
 		return nil, queryErr
 	}
 	defer func() { err = basestore.CloseRows(rows, err) }()
 
-	var values []QualifiedDocumentData
+	var values []qualifiedDocumentData
 	for rows.Next() {
 		record, err := s.scanSingleDocumentDataObject(rows)
 		if err != nil {
@@ -34,56 +34,56 @@ func (s *Store) scanDocumentData(rows *sql.Rows, queryErr error) (_ []QualifiedD
 // scanFirstDocumentData reads qualified document data values from the given row
 // object and returns the first one. If no rows match the query, a false-valued
 // flag is returned.
-func (s *Store) scanFirstDocumentData(rows *sql.Rows, queryErr error) (_ QualifiedDocumentData, _ bool, err error) {
+func (s *Store) scanFirstDocumentData(rows *sql.Rows, queryErr error) (_ qualifiedDocumentData, _ bool, err error) {
 	if queryErr != nil {
-		return QualifiedDocumentData{}, false, queryErr
+		return qualifiedDocumentData{}, false, queryErr
 	}
 	defer func() { err = basestore.CloseRows(rows, err) }()
 
 	if rows.Next() {
 		record, err := s.scanSingleDocumentDataObject(rows)
 		if err != nil {
-			return QualifiedDocumentData{}, false, err
+			return qualifiedDocumentData{}, false, err
 		}
 
 		return record, true, nil
 	}
 
-	return QualifiedDocumentData{}, false, nil
+	return qualifiedDocumentData{}, false, nil
 }
 
 // scanSingleDocumentDataObject populates a qualified document data value from the
 // given cursor.
-func (s *Store) scanSingleDocumentDataObject(rows *sql.Rows) (QualifiedDocumentData, error) {
+func (s *Store) scanSingleDocumentDataObject(rows *sql.Rows) (qualifiedDocumentData, error) {
 	var rawData []byte
-	var record QualifiedDocumentData
+	var record qualifiedDocumentData
 	if err := rows.Scan(&record.UploadID, &record.Path, &rawData); err != nil {
-		return QualifiedDocumentData{}, err
+		return qualifiedDocumentData{}, err
 	}
 
 	data, err := s.serializer.UnmarshalDocumentData(rawData)
 	if err != nil {
-		return QualifiedDocumentData{}, err
+		return qualifiedDocumentData{}, err
 	}
 	record.Document = data
 
 	return record, nil
 }
 
-type QualifiedResultChunkData struct {
+type qualifiedResultChunkData struct {
 	UploadID int
 	IndexedResultChunkData
 }
 
 // scanQualifiedResultChunkData reads qualified result chunk data from the given
 // row object.
-func (s *Store) scanQualifiedResultChunkData(rows *sql.Rows, queryErr error) (_ []QualifiedResultChunkData, err error) {
+func (s *Store) scanQualifiedResultChunkData(rows *sql.Rows, queryErr error) (_ []qualifiedResultChunkData, err error) {
 	if queryErr != nil {
 		return nil, queryErr
 	}
 	defer func() { err = basestore.CloseRows(rows, err) }()
 
-	var values []QualifiedResultChunkData
+	var values []qualifiedResultChunkData
 	for rows.Next() {
 		record, err := s.scanSingleResultChunkDataObject(rows)
 		if err != nil {
@@ -96,54 +96,38 @@ func (s *Store) scanQualifiedResultChunkData(rows *sql.Rows, queryErr error) (_ 
 	return values, nil
 }
 
-// scanFirstQualifiedResultChunkData reads qualified result chunk data values from
-// the given row object and returns the first one. If no rows match the query, a
-// false-valued flag is returned.
-func (s *Store) scanFirstQualifiedResultChunkData(rows *sql.Rows, queryErr error) (_ QualifiedResultChunkData, _ bool, err error) {
-	if queryErr != nil {
-		return QualifiedResultChunkData{}, false, queryErr
-	}
-	defer func() { err = basestore.CloseRows(rows, err) }()
-
-	if rows.Next() {
-		record, err := s.scanSingleResultChunkDataObject(rows)
-		if err != nil {
-			return QualifiedResultChunkData{}, false, err
-		}
-
-		return record, true, nil
-	}
-
-	return QualifiedResultChunkData{}, false, nil
-}
-
 // scanSingleResultChunkDataObject populates a qualified result chunk data value from
 // the given cursor.
-func (s *Store) scanSingleResultChunkDataObject(rows *sql.Rows) (QualifiedResultChunkData, error) {
+func (s *Store) scanSingleResultChunkDataObject(rows *sql.Rows) (qualifiedResultChunkData, error) {
 	var rawData []byte
-	var record QualifiedResultChunkData
+	var record qualifiedResultChunkData
 	if err := rows.Scan(&record.UploadID, &record.Index, &rawData); err != nil {
-		return QualifiedResultChunkData{}, err
+		return qualifiedResultChunkData{}, err
 	}
 
 	data, err := s.serializer.UnmarshalResultChunkData(rawData)
 	if err != nil {
-		return QualifiedResultChunkData{}, err
+		return qualifiedResultChunkData{}, err
 	}
 	record.ResultChunk = data
 
 	return record, nil
 }
 
+type qualifiedMonikerLocations struct {
+	DumpID int
+	MonikerLocations
+}
+
 // TODO - redocument
 // scanQualifiedResultChunkData reads moniker locations values from the given row object.
-func (s *Store) scanQualifiedLocations(rows *sql.Rows, queryErr error) (_ []QualifiedMonikerLocations, err error) {
+func (s *Store) scanQualifiedLocations(rows *sql.Rows, queryErr error) (_ []qualifiedMonikerLocations, err error) {
 	if queryErr != nil {
 		return nil, queryErr
 	}
 	defer func() { err = basestore.CloseRows(rows, err) }()
 
-	var values []QualifiedMonikerLocations
+	var values []qualifiedMonikerLocations
 	for rows.Next() {
 		record, err := s.scanSingleQualifiedMonikerLocationsObject(rows)
 		if err != nil {
@@ -156,18 +140,19 @@ func (s *Store) scanQualifiedLocations(rows *sql.Rows, queryErr error) (_ []Qual
 	return values, nil
 }
 
+// TOOO - fix all of these docstrings
 // scanSingleMonikerLocationsObject populates a moniker locations value from the
 // given cursor.
-func (s *Store) scanSingleQualifiedMonikerLocationsObject(rows *sql.Rows) (QualifiedMonikerLocations, error) {
+func (s *Store) scanSingleQualifiedMonikerLocationsObject(rows *sql.Rows) (qualifiedMonikerLocations, error) {
 	var rawData []byte
-	var record QualifiedMonikerLocations
+	var record qualifiedMonikerLocations
 	if err := rows.Scan(&record.DumpID, &record.Scheme, &record.Identifier, &rawData); err != nil {
-		return QualifiedMonikerLocations{}, err
+		return qualifiedMonikerLocations{}, err
 	}
 
 	data, err := s.serializer.UnmarshalLocations(rawData)
 	if err != nil {
-		return QualifiedMonikerLocations{}, err
+		return qualifiedMonikerLocations{}, err
 	}
 	record.Locations = data
 
